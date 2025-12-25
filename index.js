@@ -347,32 +347,42 @@ function calculate_truncation_index() {
     let last_raw_prompt = get_last_prompt_raw();
     let message_token_map = get_prompt_message_tokens_from_raw(last_raw_prompt, chat);
     
-    // Get chat tokens by parsing the raw prompt to find actual chat content
-    // This gives us the ACTUAL chat tokens from the last prompt (after exclusion)
+    // Calculate chat tokens from raw prompt or itemizedPrompts
     let promptChatTokens = 0;
+    let promptChatTokensSource = 'raw_prompt';
     
+    // Try to get from raw prompt first
     if (last_raw_prompt) {
-        // Try to extract chat tokens from raw prompt
         let segments = get_prompt_chat_segments_from_raw(last_raw_prompt);
         if (segments && segments.length > 0) {
-            // Sum up all chat segment tokens
             promptChatTokens = segments.reduce((sum, seg) => sum + seg.tokenCount, 0);
-            debug(`  Calculated chat tokens from ${segments.length} segments: ${promptChatTokens}`);
-        } else {
-            // Fallback: assume 85% is chat
-            promptChatTokens = Math.floor(currentPromptSize * 0.85);
-            debug('  No segments found, using 85% estimate for chat tokens');
         }
-    } else {
-        // No raw prompt available, use conservative estimate
-        promptChatTokens = Math.floor(currentPromptSize * 0.85);
-        debug('  No raw prompt, using 85% estimate for chat tokens');
     }
     
-    // Calculate non-chat budget (system prompts, character card, etc.)
-    const nonChatBudget = Math.max(currentPromptSize - promptChatTokens, 0);
+    // Fallback to itemizedPrompts if raw prompt parsing failed
+    if (promptChatTokens === 0) {
+        promptChatTokensSource = 'itemized_prompts';
+        for (let i = 0; i < itemizedPrompts.length; i++) {
+            let itemizedPrompt = itemizedPrompts[i];
+            if (itemizedPrompt?.mesId === undefined || itemizedPrompt?.mesId === null) {
+                continue;
+            }
+            let tokenCount = itemizedPrompt?.tokenCount;
+            if (tokenCount === undefined) {
+                let rawPrompt = itemizedPrompt?.rawPrompt;
+                if (Array.isArray(rawPrompt)) rawPrompt = rawPrompt.map(x => x.content).join('\n');
+                tokenCount = count_tokens(rawPrompt ?? '');
+            }
+            promptChatTokens += tokenCount;
+        }
+    }
     
-    debug(`  Prompt chat tokens: ${promptChatTokens}`);
+    // Calculate non-chat budget
+    const totalPromptTokens = last_raw_prompt ? count_tokens(last_raw_prompt) : currentPromptSize;
+    const nonChatBudget = Math.max(totalPromptTokens - promptChatTokens, 0);
+    
+    debug(`  Prompt chat tokens (${promptChatTokensSource}): ${promptChatTokens}`);
+    debug(`  Total prompt tokens: ${totalPromptTokens}`);
     debug(`  Non-chat budget: ${nonChatBudget}`);
     
     // Track token map usage

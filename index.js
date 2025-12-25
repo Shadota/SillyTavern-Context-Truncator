@@ -39,6 +39,25 @@ const default_settings = {
 let TRUNCATION_INDEX = null;  // Current truncation position
 let SYSTEM_OVERHEAD = 500;    // Estimated system prompt overhead (dynamically calculated)
 
+// Load truncation index from chat metadata
+function load_truncation_index() {
+    const ctx = getContext();
+    if (chat_metadata[MODULE_NAME]?.truncation_index !== undefined) {
+        TRUNCATION_INDEX = chat_metadata[MODULE_NAME].truncation_index;
+        debug(`Loaded truncation index from metadata: ${TRUNCATION_INDEX}`);
+    }
+}
+
+// Save truncation index to chat metadata
+function save_truncation_index() {
+    if (!chat_metadata[MODULE_NAME]) {
+        chat_metadata[MODULE_NAME] = {};
+    }
+    chat_metadata[MODULE_NAME].truncation_index = TRUNCATION_INDEX;
+    saveMetadataDebounced();
+    debug(`Saved truncation index to metadata: ${TRUNCATION_INDEX}`);
+}
+
 // Utility functions
 function log(...args) {
     console.log(`[${MODULE_NAME_FANCY}]`, ...args);
@@ -166,6 +185,7 @@ function calculate_system_overhead(chat, currentTruncationIndex) {
 function reset_truncation_index() {
     debug('Resetting truncation index');
     TRUNCATION_INDEX = null;
+    save_truncation_index();
 }
 
 function should_truncate() {
@@ -224,7 +244,12 @@ function perform_batch_truncation(chat, currentContextSize) {
     const minKeep = get_settings('min_messages_to_keep');
     const targetSize = get_settings('target_context_size');
     
-    // Initialize truncation index if not set
+    // Load truncation index from metadata if not already loaded
+    if (TRUNCATION_INDEX === null) {
+        load_truncation_index();
+    }
+    
+    // Initialize to 0 if still null
     if (TRUNCATION_INDEX === null) {
         TRUNCATION_INDEX = 0;
     }
@@ -271,6 +296,7 @@ function perform_batch_truncation(chat, currentContextSize) {
         
         debug(`Moving truncation index from ${TRUNCATION_INDEX} to ${targetIndex}`);
         TRUNCATION_INDEX = targetIndex;
+        save_truncation_index();
     }
     // If we're over-truncated and can un-truncate
     else if (tokensToRemove < 0 && TRUNCATION_INDEX > 0) {
@@ -283,6 +309,7 @@ function perform_batch_truncation(chat, currentContextSize) {
         
         debug(`Moving truncation index backward from ${TRUNCATION_INDEX} to ${targetIndex}`);
         TRUNCATION_INDEX = targetIndex;
+        save_truncation_index();
     }
     
     // Apply truncation to chat
@@ -412,8 +439,9 @@ function register_event_listeners() {
     eventSource.on(event_types.CHAT_CHANGED, () => {
         const newChatId = ctx.chatId;
         if (currentChatId !== null && currentChatId !== newChatId) {
-            debug('Chat switched, resetting truncation');
-            reset_truncation_index();
+            debug('Chat switched, loading truncation index for new chat');
+            TRUNCATION_INDEX = null;  // Reset to force reload
+            load_truncation_index();
         } else {
             debug('Chat changed (same chat), keeping truncation index');
         }

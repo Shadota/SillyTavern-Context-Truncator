@@ -1,0 +1,88 @@
+<div id="context_truncator_settings">
+    <div class="inline-drawer">
+        <div class="inline-drawer-toggle inline-drawer-header">
+            <b>Context Truncator</b>
+            <div class="inline-drawer-icon fa-solid fa-circle-chevron-down down"></div>
+        </div>
+        
+        <div class="inline-drawer-content">
+            <hr>
+            
+            <!-- Enable/Disable -->
+            <label class="checkbox_label" title="Enable or disable batch truncation">
+                <input id="ct_enabled" type="checkbox" />
+                <span>Enable Batch Truncation</span>
+            </label>
+            
+            <!-- Settings -->
+            <label class="checkbox_label" title="Target context size to trim down to (in tokens)">
+                <input id="ct_target_size" class="text_pole widthUnset inline_setting" 
+                       type="number" min="1000" max="200000" step="1000" />
+                <span>Target Context Size (tokens)</span>
+            </label>
+            
+            <label class="checkbox_label" title="Number of messages to remove per batch (prevents cache invalidation)">
+                <input id="ct_batch_size" class="text_pole widthUnset inline_setting" 
+                       type="number" min="1" max="100" />
+                <span>Batch Size (messages)</span>
+            </label>
+            
+            <label class="checkbox_label" title="Minimum number of messages to always keep (safety limit)">
+                <input id="ct_min_keep" class="text_pole widthUnset inline_setting" 
+                       type="number" min="1" max="100" />
+                <span>Min Messages to Keep</span>
+            </label>
+            
+            <!-- Status Display -->
+            <hr>
+            <h4 class="textAlignCenter">Status</h4>
+            
+            <div id="ct_status_display" class="ct_status_panel">
+                <table class="ct_status_table">
+                    <tr>
+                        <td>Current Context:</td>
+                        <td><strong id="ct_current_size">-</strong> tokens</td>
+                    </tr>
+                    <tr>
+                        <td>Target:</td>
+                        <td><strong id="ct_target_display">-</strong> tokens</td>
+                    </tr>
+                    <tr>
+                        <td>Batch Size:</td>
+                        <td><strong id="ct_batch_display">-</strong> messages</td>
+                    </tr>
+                    <tr>
+                        <td>Truncation Index:</td>
+                        <td><strong id="ct_truncation_index">-</strong></td>
+                    </tr>
+                    <tr>
+                        <td>Total Messages:</td>
+                        <td><strong id="ct_total_messages">-</strong></td>
+                    </tr>
+                    <tr>
+                        <td>Kept Messages:</td>
+                        <td><strong id="ct_kept_messages">-</strong></td>
+                    </tr>
+                </table>
+            </div>
+            
+            <!-- Control Buttons -->
+            <div class="flex-container justifyspacebetween alignitemscenter">
+                <button id="ct_reset" class="menu_button flex1" 
+                        title="Reset truncation index">
+                    <i class="fa-solid fa-rotate-left"></i>
+                    <span>Reset Truncation</span>
+                </button>
+                <button id="ct_refresh_status" class="menu_button fa-solid fa-sync margin0" 
+                        title="Refresh status display"></button>
+            </div>
+            
+            <!-- Debug -->
+            <hr>
+            <label class="checkbox_label" title="Enable debug logging to browser console">
+                <input id="ct_debug" type="checkbox" />
+                <span>Debug Mode</span>
+            </label>
+        </div>
+    </div>
+</div>

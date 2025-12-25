@@ -1,0 +1,13 @@
+{
+    "display_name": "Context Truncator",
+    "loading_order": 1,
+    "requires": [],
+    "optional": [],
+    "minimum_client_version": "1.14.0",
+    "js": "index.js",
+    "css": "style.css",
+    "author": "Shadota",
+    "version": "1.0.0",
+    "homePage": "https://github.com/YourUsername/SillyTavern-Context-Truncator",
+    "generate_interceptor": "truncator_intercept_messages"
+}

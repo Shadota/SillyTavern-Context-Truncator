@@ -1,0 +1,50 @@
+/* Main settings container */
+#context_truncator_settings {
+    margin: 1em 0;
+}
+
+/* Status panel styling */
+.ct_status_panel {
+    background-color: var(--black30a);
+    border-radius: 5px;
+    padding: 1em;
+    margin: 0.5em 0;
+}
+
+.ct_status_table {
+    width: 100%;
+    border-collapse: collapse;
+}
+
+.ct_status_table td {
+    padding: 0.3em 0.5em;
+    border-bottom: 1px solid var(--SmartThemeBorderColor);
+}
+
+.ct_status_table td:first-child {
+    text-align: left;
+    opacity: 0.8;
+}
+
+.ct_status_table td:last-child {
+    text-align: right;
+}
+
+.ct_status_table tr:last-child td {
+    border-bottom: none;
+}
+
+/* Inline settings */
+#context_truncator_settings .inline_setting {
+    width: 6em;
+}
+
+/* Button styling */
+#context_truncator_settings .menu_button i {
+    margin-right: 0.5em;
+}
+
+/* Horizontal rules */
+#context_truncator_settings hr {
+    margin: 1em 0;
+}

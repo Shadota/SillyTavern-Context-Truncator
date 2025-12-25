@@ -542,6 +542,8 @@ globalThis.truncator_intercept_messages = function (chat, contextSize, abort, ty
     let IGNORE_SYMBOL = getContext().symbols.ignore;
     
     // Mark messages with IGNORE_SYMBOL based on lagging flag
+    let kept_count = 0;
+    let excluded_count = 0;
     for (let i = start; i >= 0; i--) {
         delete chat[i].extra.ignore_formatting;
         
@@ -549,10 +551,16 @@ globalThis.truncator_intercept_messages = function (chat, contextSize, abort, ty
         let lagging = get_data(message, 'lagging');
         
         chat[i] = structuredClone(chat[i]);
-        chat[i].extra[IGNORE_SYMBOL] = !lagging;  // TRUE = keep, FALSE = ignore
+        chat[i].extra[IGNORE_SYMBOL] = !lagging;
+        
+        if (!lagging) {
+            excluded_count++;
+        } else {
+            kept_count++;
+        }
     }
     
-    debug(`Applied IGNORE_SYMBOL based on lagging flags`);
+    debug(`Applied IGNORE_SYMBOL: ${kept_count} kept, ${excluded_count} excluded`);
 };
 
 // Summarization functionality

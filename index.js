@@ -343,15 +343,66 @@ globalThis.truncator_intercept_messages = function (chat, contextSize, abort, ty
     
     debug(`Intercepting messages. Type: ${type}, Context: ${contextSize}`);
     
-    // ALWAYS run truncation logic to maintain the truncation index
-    // This is necessary because we need to re-apply truncation markers each generation
-    debug('Running batch truncation logic');
+    // Calculate truncation index
+    const batchSize = get_settings('batch_size');
+    const minKeep = get_settings('min_messages_to_keep');
+    const targetSize = get_settings('target_context_size');
     
-    // Apply truncation using ST's ignore symbol
-    // The chat array is modified in-place with ignore markers
-    const truncatedChat = perform_batch_truncation(chat, contextSize);
+    // Load truncation index from metadata if not already loaded
+    if (TRUNCATION_INDEX === null) {
+        load_truncation_index();
+    }
     
-    return truncatedChat;
+    // Initialize to 0 if still null
+    if (TRUNCATION_INDEX === null) {
+        TRUNCATION_INDEX = 0;
+    }
+    
+    const chatLength = chat.length;
+    const maxTruncateUpTo = Math.max(chatLength - minKeep, 0);
+    
+    debug(`Intercept: Chat length: ${chatLength}, Truncation index: ${TRUNCATION_INDEX}`);
+    
+    // If we already have a truncation index, use it
+    if (TRUNCATION_INDEX > 0) {
+        debug(`Using existing truncation index: ${TRUNCATION_INDEX}`);
+    } else {
+        // Calculate new truncation index
+        const fullSize = contextSize || 60000;
+        const tokensToRemove = fullSize - targetSize;
+        
+        if (tokensToRemove > 0) {
+            // Count message tokens to estimate
+            let totalMessageTokens = 0;
+            let messageCount = 0;
+            for (let i = 0; i < chat.length; i++) {
+                if (!chat[i].is_system) {
+                    totalMessageTokens += count_tokens(chat[i].mes);
+                    messageCount++;
+                }
+            }
+            
+            const avgTokensPerMessage = messageCount > 0 ? totalMessageTokens / messageCount : 0;
+            const messagesToTruncate = Math.ceil(tokensToRemove / avgTokensPerMessage);
+            
+            TRUNCATION_INDEX = Math.min(
+                Math.max(messagesToTruncate, batchSize),
+                maxTruncateUpTo
+            );
+            
+            debug(`Calculated new truncation index: ${TRUNCATION_INDEX}`);
+            save_truncation_index();
+        }
+    }
+    
+    // Return a sliced array - only keep messages from truncation index onwards
+    if (TRUNCATION_INDEX > 0 && TRUNCATION_INDEX < chat.length) {
+        const truncatedChat = chat.slice(TRUNCATION_INDEX);
+        debug(`Returning truncated chat: ${truncatedChat.length} messages (removed ${TRUNCATION_INDEX})`);
+        return truncatedChat;
+    }
+    
+    return chat;
 };
 
 // Status display updates

@@ -221,10 +221,12 @@ function estimate_size_after_truncation(chat, truncateUpTo) {
 }
 
 function apply_truncation(chat, truncateUpTo) {
-    debug(`Applying truncation: removing first ${truncateUpTo} messages from chat array`);
+    debug(`Applying truncation: removing first ${truncateUpTo} messages from chat array (in-place)`);
     
-    // Simply return a slice of the chat array, excluding the first truncateUpTo messages
-    return chat.slice(truncateUpTo);
+    // Remove messages from the array IN PLACE using splice
+    chat.splice(0, truncateUpTo);
+    
+    return chat;
 }
 
 function perform_batch_truncation(chat, currentContextSize) {

@@ -42,23 +42,29 @@ let SYSTEM_OVERHEAD = 500;    // Estimated system prompt overhead (dynamically c
 // Load truncation index from chat metadata
 function load_truncation_index() {
     const ctx = getContext();
-    debug(`Attempting to load truncation index. chat_metadata[${MODULE_NAME}]:`, chat_metadata[MODULE_NAME]);
-    if (chat_metadata[MODULE_NAME]?.truncation_index !== undefined) {
-        TRUNCATION_INDEX = chat_metadata[MODULE_NAME].truncation_index;
-        debug(`Loaded truncation index from metadata: ${TRUNCATION_INDEX}`);
+    debug(`Attempting to load truncation index. ctx.chat_metadata[${MODULE_NAME}]:`, ctx.chat_metadata?.[MODULE_NAME]);
+    if (ctx.chat_metadata?.[MODULE_NAME]?.truncation_index !== undefined) {
+        TRUNCATION_INDEX = ctx.chat_metadata[MODULE_NAME].truncation_index;
+        debug(`Loaded truncation index from ctx.chat_metadata: ${TRUNCATION_INDEX}`);
     } else {
-        debug(`No truncation index found in metadata`);
+        debug(`No truncation index found in ctx.chat_metadata`);
     }
 }
 
 // Save truncation index to chat metadata
-function save_truncation_index() {
-    if (!chat_metadata[MODULE_NAME]) {
-        chat_metadata[MODULE_NAME] = {};
+async function save_truncation_index() {
+    const ctx = getContext();
+    if (!ctx.chat_metadata) {
+        debug(`ERROR: ctx.chat_metadata is undefined!`);
+        return;
     }
-    chat_metadata[MODULE_NAME].truncation_index = TRUNCATION_INDEX;
-    saveMetadataDebounced();
-    debug(`Saved truncation index to metadata: ${TRUNCATION_INDEX}`);
+    if (!ctx.chat_metadata[MODULE_NAME]) {
+        ctx.chat_metadata[MODULE_NAME] = {};
+    }
+    ctx.chat_metadata[MODULE_NAME].truncation_index = TRUNCATION_INDEX;
+    debug(`Saved truncation index to ctx.chat_metadata: ${TRUNCATION_INDEX}`);
+    await ctx.saveMetadata();
+    debug(`Metadata saved to disk`);
 }
 
 // Utility functions

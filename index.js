@@ -387,6 +387,8 @@ function calculate_truncation_index() {
         }
         
         nonChatBudget = Math.max(totalPromptTokens - promptChatTokens, 0);
+        debug(`  Total prompt tokens: ${totalPromptTokens}`);
+        debug(`  Prompt chat tokens: ${promptChatTokens}`);
         debug(`  Calculated non-chat budget from raw prompt: ${nonChatBudget}`);
     } else {
         // No saved value and no raw prompt - this shouldn't happen after the first generation
@@ -394,8 +396,6 @@ function calculate_truncation_index() {
         nonChatBudget = 0;
     }
     
-    debug(`  Total prompt tokens: ${totalPromptTokens}`);
-    debug(`  Prompt chat tokens: ${promptChatTokens}`);
     debug(`  Non-chat budget: ${nonChatBudget}`);
     
     // Track token map usage

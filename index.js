@@ -206,41 +206,53 @@ function calculate_truncation_index() {
     const minKeep = get_settings('min_messages_to_keep');
     
     // Get previous prompt size
-    const previousSize = get_previous_prompt_size();
+    const previousPromptSize = get_previous_prompt_size();
     
-    if (previousSize === 0) {
+    if (previousPromptSize === 0) {
         debug('No previous prompt, cannot calculate truncation');
         return 0;
     }
     
-    debug(`Calculating truncation index. Previous: ${previousSize}, Target: ${targetSize}`);
-    
-    // If we're under target, no truncation needed
-    if (previousSize <= targetSize) {
-        debug('Under target, no truncation needed');
-        return 0;
-    }
-    
-    // Calculate how many tokens to remove
-    const tokensToRemove = previousSize - targetSize;
-    debug(`Need to remove ${tokensToRemove} tokens`);
-    
-    // Estimate average tokens per message
-    let totalTokens = 0;
+    // Calculate chat history size (sum of all message tokens)
+    let chatHistorySize = 0;
     let messageCount = 0;
     for (let i = 0; i < chat.length; i++) {
         if (!chat[i].is_system) {
-            totalTokens += count_tokens(chat[i].mes);
+            chatHistorySize += count_tokens(chat[i].mes);
             messageCount++;
         }
     }
     
-    const avgTokensPerMessage = messageCount > 0 ? totalTokens / messageCount : 0;
-    debug(`Average tokens per message: ${avgTokensPerMessage.toFixed(0)}`);
+    // Calculate system prompt overhead (everything except chat history)
+    const systemOverhead = previousPromptSize - chatHistorySize;
+    
+    // Calculate target chat history size
+    const targetChatHistorySize = targetSize - systemOverhead;
+    
+    debug(`Calculating truncation index:`);
+    debug(`  Full prompt: ${previousPromptSize} tokens`);
+    debug(`  Chat history: ${chatHistorySize} tokens`);
+    debug(`  System overhead: ${systemOverhead} tokens`);
+    debug(`  Target full: ${targetSize} tokens`);
+    debug(`  Target chat history: ${targetChatHistorySize} tokens`);
+    
+    // If chat history is under target, no truncation needed
+    if (chatHistorySize <= targetChatHistorySize) {
+        debug('Chat history under target, no truncation needed');
+        return 0;
+    }
+    
+    // Calculate how many tokens to remove from chat history
+    const tokensToRemove = chatHistorySize - targetChatHistorySize;
+    debug(`  Need to remove ${tokensToRemove} tokens from chat history`);
+    
+    // Calculate average tokens per message
+    const avgTokensPerMessage = messageCount > 0 ? chatHistorySize / messageCount : 0;
+    debug(`  Average tokens per message: ${avgTokensPerMessage.toFixed(0)}`);
     
     // Estimate messages to truncate
     const messagesToTruncate = Math.ceil(tokensToRemove / avgTokensPerMessage);
-    debug(`Estimated messages to truncate: ${messagesToTruncate}`);
+    debug(`  Estimated messages to truncate: ${messagesToTruncate}`);
     
     // Round up to nearest batch
     const batchesToTruncate = Math.ceil(messagesToTruncate / batchSize);
@@ -249,7 +261,7 @@ function calculate_truncation_index() {
         Math.max(chat.length - minKeep, 0)
     );
     
-    debug(`New truncation index: ${newIndex} (${batchesToTruncate} batches)`);
+    debug(`  New truncation index: ${newIndex} (${batchesToTruncate} batches)`);
     return newIndex;
 }
 

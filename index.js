@@ -297,14 +297,10 @@ globalThis.truncator_intercept_messages = function (chat, contextSize, abort, ty
     
     debug(`Intercepting messages. Type: ${type}, Context: ${contextSize}`);
     
-    // Always run batch truncation logic if we have an existing index OR need to truncate
-    // This allows both forward (truncate more) and backward (un-truncate) movement
-    if (TRUNCATION_INDEX !== null || should_truncate()) {
-        debug('Running batch truncation logic');
-        return perform_batch_truncation(chat, contextSize);
-    }
-    
-    return chat;
+    // ALWAYS run truncation logic to maintain the truncation index
+    // This is necessary because we need to re-apply truncation markers each generation
+    debug('Running batch truncation logic');
+    return perform_batch_truncation(chat, contextSize);
 };
 
 // Status display updates

@@ -362,14 +362,11 @@ function calculate_truncation_index() {
     
     debug(`  Found ${itemizedCount} itemizedPrompts for message ${lastMessageId}`);
     
-    // If we didn't find any itemizedPrompts, fall back to counting all messages
+    // If we didn't find any itemizedPrompts, use a conservative estimate
     if (promptChatTokens === 0) {
-        debug('  No itemizedPrompts found for last message, counting all messages');
-        for (let i = 0; i < chat.length; i++) {
-            if (!chat[i].is_system) {
-                promptChatTokens += count_tokens(chat[i].mes);
-            }
-        }
+        debug('  No itemizedPrompts found, using conservative estimate');
+        // Assume 80% of context is chat, 20% is non-chat (system, character card, etc.)
+        promptChatTokens = Math.floor(currentPromptSize * 0.8);
     }
     
     // Calculate non-chat budget (system prompts, character card, etc.)

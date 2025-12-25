@@ -427,12 +427,14 @@ function update_message_inclusion_flags() {
     debug(`Truncation index: ${TRUNCATION_INDEX}`);
     
     // Mark messages as lagging (excluded) or not
+    // lagging = true means the message is AT OR AFTER the threshold (kept in context)
+    // lagging = false means the message is BEFORE the threshold (excluded from context)
     for (let i = 0; i < chat.length; i++) {
-        const lagging = i < TRUNCATION_INDEX;
+        const lagging = i >= TRUNCATION_INDEX;
         set_data(chat[i], 'lagging', lagging);
         
-        // If lagging and has no summary, mark for summarization
-        if (lagging && !get_memory(chat[i]) && !chat[i].is_system) {
+        // If NOT lagging (excluded) and has no summary, mark for summarization
+        if (!lagging && !get_memory(chat[i]) && !chat[i].is_system) {
             set_data(chat[i], 'needs_summary', true);
         }
     }

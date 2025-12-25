@@ -347,29 +347,22 @@ function calculate_truncation_index() {
     let last_raw_prompt = get_last_prompt_raw();
     let message_token_map = get_prompt_message_tokens_from_raw(last_raw_prompt, chat);
     
-    // Calculate what the FULL chat size would be (all messages, no truncation)
-    // This is needed to determine the non-chat budget
-    function calculateFullChatSize() {
-        let total = 0;
-        for (let i = 0; i < chat.length; i++) {
-            const message = chat[i];
-            if (message.is_system) continue;
-            
-            // Use token map if available, otherwise estimate
-            if (message_token_map && message_token_map.has(i)) {
-                total += message_token_map.get(i);
-            } else {
-                const roleHeaderTokens = message.is_user ? promptHeaderTokens.user : promptHeaderTokens.assistant;
-                total += count_tokens(message.mes) + roleHeaderTokens;
-            }
+    // Calculate non-chat budget from the CURRENT prompt (which may be truncated)
+    // The key insight: both total and chat tokens scale together, so the non-chat budget stays constant
+    let totalPromptTokens = last_raw_prompt ? count_tokens(last_raw_prompt) : currentPromptSize;
+    let promptChatTokens = 0;
+    
+    if (last_raw_prompt) {
+        let segments = get_prompt_chat_segments_from_raw(last_raw_prompt);
+        if (segments && segments.length > 0) {
+            promptChatTokens = segments.reduce((sum, seg) => sum + seg.tokenCount, 0);
         }
-        return total;
     }
     
-    const fullChatSize = calculateFullChatSize();
-    const nonChatBudget = Math.max(currentPromptSize - fullChatSize, 0);
+    const nonChatBudget = Math.max(totalPromptTokens - promptChatTokens, 0);
     
-    debug(`  Full chat size (all messages): ${fullChatSize}`);
+    debug(`  Total prompt tokens: ${totalPromptTokens}`);
+    debug(`  Prompt chat tokens: ${promptChatTokens}`);
     debug(`  Non-chat budget: ${nonChatBudget}`);
     
     // Track token map usage

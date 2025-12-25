@@ -232,6 +232,12 @@ function apply_truncation(chat, truncateUpTo) {
     // Clone each message to avoid modifying the permanent chat
     for (let i = 0; i < chat.length; i++) {
         chat[i] = structuredClone(chat[i]);  // Keep changes temporary for this generation
+        
+        // Initialize extra object if it doesn't exist
+        if (!chat[i].extra) {
+            chat[i].extra = {};
+        }
+        
         chat[i].extra[IGNORE_SYMBOL] = i < truncateUpTo;  // Ignore if before truncation index
     }
     

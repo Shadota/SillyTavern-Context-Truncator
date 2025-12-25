@@ -171,6 +171,87 @@ function get_previous_prompt_size() {
     return size;
 }
 
+// Parse raw prompt into chat segments with token counts
+function get_prompt_chat_segments_from_raw(raw_prompt) {
+    if (!raw_prompt) {
+        return null;
+    }
+    
+    // Match Llama 3 style headers: <|eot_id|><|start_header_id|>role<|end_header_id|>
+    const header_regex = /<\|eot_id\|><\|start_header_id\|>(user|assistant|system)<\|end_header_id\|>/g;
+    let matches = [];
+    let match;
+    
+    while ((match = header_regex.exec(raw_prompt)) !== null) {
+        matches.push({
+            index: match.index,
+            role: match[1],
+        });
+    }
+    
+    if (matches.length === 0) {
+        return null;
+    }
+    
+    let segments = [];
+    for (let i = 0; i < matches.length; i++) {
+        let current = matches[i];
+        let next = matches[i + 1];
+        
+        // Only count user and assistant messages (skip system)
+        if (current.role !== 'user' && current.role !== 'assistant') {
+            continue;
+        }
+        
+        let end_index = next ? next.index : raw_prompt.length;
+        let segment = raw_prompt.slice(current.index, end_index);
+        
+        segments.push({
+            role: current.role,
+            tokenCount: count_tokens(segment),
+        });
+    }
+    
+    return segments;
+}
+
+// Build a map of message index to actual token count in prompt
+function get_prompt_message_tokens_from_raw(raw_prompt, chat) {
+    let segments = get_prompt_chat_segments_from_raw(raw_prompt);
+    if (!segments) {
+        return null;
+    }
+    
+    let map = new Map();
+    let segment_index = 0;
+    
+    // Match segments to chat messages
+    for (let i = 0; i < chat.length && segment_index < segments.length; i++) {
+        let message = chat[i];
+        
+        // Skip system messages
+        if (message.is_system) {
+            continue;
+        }
+        
+        let expected_role = message.is_user ? 'user' : 'assistant';
+        
+        // Find next matching segment
+        while (segment_index < segments.length && segments[segment_index].role !== expected_role) {
+            segment_index += 1;
+        }
+        
+        if (segment_index >= segments.length) {
+            break;
+        }
+        
+        map.set(i, segments[segment_index].tokenCount);
+        segment_index += 1;
+    }
+    
+    return map;
+}
+
 // Truncation index management
 function load_truncation_index() {
     debug(`Loading truncation index from metadata`);
@@ -297,8 +378,25 @@ function calculate_truncation_index() {
     debug(`  Prompt chat tokens: ${promptChatTokens}`);
     debug(`  Non-chat budget: ${nonChatBudget}`);
     
+    // Build message token map from last prompt for accurate estimation
+    let last_raw_prompt = get_last_prompt_raw();
+    let message_token_map = get_prompt_message_tokens_from_raw(last_raw_prompt, chat);
+    let map_hits = 0;
+    let map_misses = 0;
+    
     // Function to estimate message tokens in prompt
     function estimateMessagePromptTokens(message, index) {
+        // Try to use actual token count from map first
+        if (message_token_map) {
+            let mapped = message_token_map.get(index);
+            if (mapped !== undefined) {
+                map_hits++;
+                return mapped;
+            }
+        }
+        
+        // Fall back to estimation
+        map_misses++;
         const roleHeaderTokens = message.is_user ? promptHeaderTokens.user : promptHeaderTokens.assistant;
         return count_tokens(message.mes) + roleHeaderTokens;
     }
@@ -374,6 +472,7 @@ function calculate_truncation_index() {
     debug(`  Final truncation index: ${finalIndex}`);
     debug(`  Final chat size: ${estimateChatSize(finalIndex)}`);
     debug(`  Final total: ${estimateChatSize(finalIndex) + nonChatBudget}`);
+    debug(`  Token map: ${map_hits} hits, ${map_misses} misses (${message_token_map ? message_token_map.size : 0} entries)`);
     
     return finalIndex;
 }

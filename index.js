@@ -120,27 +120,26 @@ function get_previous_prompt_size() {
 }
 
 // Calculate system overhead by comparing full prompt with message tokens
-function calculate_system_overhead(chat) {
+function calculate_system_overhead(chat, currentTruncationIndex) {
     const previousPromptSize = get_previous_prompt_size();
     
     if (previousPromptSize === 0) {
         return SYSTEM_OVERHEAD; // Use default if no previous prompt
     }
     
-    const IGNORE_SYMBOL = getContext().symbols.ignore;
-    
-    // Count only messages that are NOT ignored (i.e., actually in the prompt)
-    let messageTokens = 0;
-    for (let i = 0; i < chat.length; i++) {
-        if (!chat[i].is_system && !chat[i].extra?.[IGNORE_SYMBOL]) {
-            messageTokens += count_tokens(chat[i].mes);
+    // Count messages that were KEPT in the previous generation
+    // (i.e., from currentTruncationIndex to end)
+    let keptMessageTokens = 0;
+    for (let i = currentTruncationIndex; i < chat.length; i++) {
+        if (!chat[i].is_system) {
+            keptMessageTokens += count_tokens(chat[i].mes);
         }
     }
     
-    // System overhead = total prompt - message tokens
-    const overhead = previousPromptSize - messageTokens;
+    // System overhead = total prompt - kept message tokens
+    const overhead = previousPromptSize - keptMessageTokens;
     
-    debug(`Calculated system overhead: ${overhead} tokens (${previousPromptSize} total - ${messageTokens} messages)`);
+    debug(`Calculated system overhead: ${overhead} tokens (${previousPromptSize} total - ${keptMessageTokens} kept messages from index ${currentTruncationIndex})`);
     
     return Math.max(overhead, 500); // Minimum 500 tokens
 }
@@ -162,12 +161,11 @@ function should_truncate() {
 }
 
 function estimate_size_after_truncation(chat, truncateUpTo) {
-    const IGNORE_SYMBOL = getContext().symbols.ignore;
     let total = 0;
     
-    // Count messages from truncateUpTo onwards that are NOT ignored
+    // Count messages from truncateUpTo onwards
     for (let i = truncateUpTo; i < chat.length; i++) {
-        if (!chat[i].is_system && !chat[i].extra?.[IGNORE_SYMBOL]) {
+        if (!chat[i].is_system) {
             total += count_tokens(chat[i].mes);
         }
     }
@@ -205,13 +203,13 @@ function perform_batch_truncation(chat) {
     const minKeep = get_settings('min_messages_to_keep');
     const targetSize = get_settings('target_context_size');
     
-    // Calculate system overhead dynamically
-    SYSTEM_OVERHEAD = calculate_system_overhead(chat);
-    
     // Initialize truncation index if not set
     if (TRUNCATION_INDEX === null) {
         TRUNCATION_INDEX = 0;
     }
+    
+    // Calculate system overhead dynamically based on current truncation
+    SYSTEM_OVERHEAD = calculate_system_overhead(chat, TRUNCATION_INDEX);
     
     const chatLength = chat.length;
     const maxTruncateUpTo = Math.max(chatLength - minKeep, 0);

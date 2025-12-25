@@ -405,14 +405,16 @@ function calculate_truncation_index() {
             // Skip system messages
             if (message.is_system) continue;
             
+            // Messages before startIndex are excluded (lagging)
             // Messages at or after startIndex are kept in full
-            const kept = i >= startIndex;
-            if (kept) {
+            const lagging = i < startIndex;
+            if (!lagging) {
+                // Kept message - use full token count
                 total += estimateMessagePromptTokens(message, i);
                 continue;
             }
             
-            // Messages before startIndex are replaced with summaries (if they have one)
+            // Excluded message - use summary if available
             const summary = get_memory(message);
             if (summary && check_message_exclusion(message)) {
                 total += count_tokens(summary) + sepSize;
@@ -521,14 +523,14 @@ function update_message_inclusion_flags() {
     debug(`Truncation index: ${TRUNCATION_INDEX}`);
     
     // Mark messages as lagging (excluded) or not
-    // lagging = true means the message is AT OR AFTER the threshold (kept in context)
-    // lagging = false means the message is BEFORE the threshold (excluded from context)
+    // lagging = true means the message is BEFORE the threshold (excluded from context, "lagging behind")
+    // lagging = false means the message is AT OR AFTER the threshold (kept in context)
     for (let i = 0; i < chat.length; i++) {
-        const lagging = i >= TRUNCATION_INDEX;
+        const lagging = i < TRUNCATION_INDEX;
         set_data(chat[i], 'lagging', lagging);
         
-        // If NOT lagging (excluded) and has no summary, mark for summarization
-        if (!lagging && !get_memory(chat[i]) && !chat[i].is_system) {
+        // If lagging (excluded) and has no summary, mark for summarization
+        if (lagging && !get_memory(chat[i]) && !chat[i].is_system) {
             set_data(chat[i], 'needs_summary', true);
         }
     }
@@ -636,6 +638,8 @@ globalThis.truncator_intercept_messages = function (chat, contextSize, abort, ty
     let IGNORE_SYMBOL = getContext().symbols.ignore;
     
     // Mark messages with IGNORE_SYMBOL based on lagging flag
+    // lagging = true means excluded (IGNORE_SYMBOL = true)
+    // lagging = false means kept (IGNORE_SYMBOL = false)
     let kept_count = 0;
     let excluded_count = 0;
     for (let i = start; i >= 0; i--) {
@@ -645,9 +649,9 @@ globalThis.truncator_intercept_messages = function (chat, contextSize, abort, ty
         let lagging = get_data(message, 'lagging');
         
         chat[i] = structuredClone(chat[i]);
-        chat[i].extra[IGNORE_SYMBOL] = !lagging;
+        chat[i].extra[IGNORE_SYMBOL] = lagging;
         
-        if (!lagging) {
+        if (lagging) {
             excluded_count++;
         } else {
             kept_count++;

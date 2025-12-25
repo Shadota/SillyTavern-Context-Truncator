@@ -1,6 +1,10 @@
+// Context Truncator with Summarization
+// Based on Qvink Memory by Qvink, simplified and adapted for context truncation
+
 import {
     getStringHash,
     debounce,
+    trimToEndSentence,
 } from '../../../utils.js';
 
 import {
@@ -8,7 +12,10 @@ import {
     scrollChatToBottom,
     saveSettingsDebounced,
     getMaxContextSize,
-    main_api,
+    streamingProcessor,
+    amount_gen,
+    extension_prompt_roles,
+    extension_prompt_types,
     chat_metadata,
 } from '../../../../script.js';
 
@@ -32,34 +39,26 @@ const default_settings = {
     target_context_size: 8000,      // Target size in tokens
     batch_size: 20,                 // Messages per batch
     min_messages_to_keep: 10,       // Safety limit
+    
+    // Summarization settings
+    auto_summarize: true,
+    summary_prompt: `Summarize the following message in a single, concise sentence. Include names when possible. Response must be in past tense and contain ONLY the summary.
+
+Message to summarize:
+{{message}}`,
+    summary_injection_separator: "\n* ",
+    summary_injection_template: "[Following is a list of earlier events]:\n{{summaries}}\n",
+    
+    // Injection settings
+    injection_position: extension_prompt_types.IN_PROMPT,
+    injection_depth: 2,
+    injection_role: extension_prompt_roles.SYSTEM,
+    
     debug_mode: false,
 };
 
 // Global state
 let TRUNCATION_INDEX = null;  // Current truncation position
-let SYSTEM_OVERHEAD = 500;    // Estimated system prompt overhead (dynamically calculated)
-
-// Load truncation index from chat metadata
-function load_truncation_index() {
-    debug(`Attempting to load truncation index. chat_metadata[${MODULE_NAME}]:`, chat_metadata?.[MODULE_NAME]);
-    if (chat_metadata?.[MODULE_NAME]?.truncation_index !== undefined) {
-        TRUNCATION_INDEX = chat_metadata[MODULE_NAME].truncation_index;
-        debug(`Loaded truncation index from chat_metadata: ${TRUNCATION_INDEX}`);
-    } else {
-        debug(`No truncation index found in chat_metadata`);
-    }
-}
-
-// Save truncation index to chat metadata
-function save_truncation_index() {
-    if (!chat_metadata[MODULE_NAME]) {
-        chat_metadata[MODULE_NAME] = {};
-    }
-    chat_metadata[MODULE_NAME].truncation_index = TRUNCATION_INDEX;
-    debug(`Saved truncation index to chat_metadata: ${TRUNCATION_INDEX}`);
-    saveMetadataDebounced();
-    debug(`Metadata save queued`);
-}
 
 // Utility functions
 function log(...args) {
@@ -74,7 +73,7 @@ function debug(...args) {
 
 function error(...args) {
     console.error(`[${MODULE_NAME_FANCY}]`, ...args);
-    toastr.error(Array.from(args).join(' '), MODULE_NAME_FANCY);
+    toastr.error(Array.from(arguments).join(' '), MODULE_NAME_FANCY);
 }
 
 // Settings management
@@ -98,6 +97,37 @@ function set_settings(key, value) {
 function count_tokens(text, padding = 0) {
     const ctx = getContext();
     return ctx.getTokenCount(text, padding);
+}
+
+// Message data management (stores summaries and flags on messages)
+function set_data(message, key, value) {
+    if (message?.extra?.[MODULE_NAME]?.[key] === value) return;
+    
+    if (!message.extra) {
+        message.extra = {};
+    }
+    if (!message.extra[MODULE_NAME]) {
+        message.extra[MODULE_NAME] = {};
+    }
+    
+    message.extra[MODULE_NAME][key] = value;
+    
+    // Also save on current swipe
+    let swipe_index = message.swipe_id;
+    if (swipe_index && message.swipe_info?.[swipe_index]) {
+        if (!message.swipe_info[swipe_index].extra) {
+            message.swipe_info[swipe_index].extra = {};
+        }
+        message.swipe_info[swipe_index].extra[MODULE_NAME] = structuredClone(message.extra[MODULE_NAME]);
+    }
+}
+
+function get_data(message, key) {
+    return message?.extra?.[MODULE_NAME]?.[key];
+}
+
+function get_memory(message) {
+    return get_data(message, 'memory') ?? "";
 }
 
 // Previous prompt detection
@@ -141,198 +171,197 @@ function get_previous_prompt_size() {
     return size;
 }
 
-// Calculate the ratio between our token counts and ST's actual prompt size
-let MESSAGE_TOKEN_RATIO = 1.0;
-
-// Calculate system overhead by comparing full prompt with message tokens
-function calculate_system_overhead(chat, currentTruncationIndex) {
-    const previousPromptSize = get_previous_prompt_size();
-    
-    if (previousPromptSize === 0) {
-        return SYSTEM_OVERHEAD; // Use default if no previous prompt
+// Truncation index management
+function load_truncation_index() {
+    debug(`Loading truncation index from metadata`);
+    if (chat_metadata?.[MODULE_NAME]?.truncation_index !== undefined) {
+        TRUNCATION_INDEX = chat_metadata[MODULE_NAME].truncation_index;
+        debug(`Loaded truncation index: ${TRUNCATION_INDEX}`);
+    } else {
+        debug(`No truncation index found`);
     }
-    
-    // Count ALL messages (raw count)
-    let allMessageTokens = 0;
-    for (let i = 0; i < chat.length; i++) {
-        if (!chat[i].is_system) {
-            allMessageTokens += count_tokens(chat[i].mes);
-        }
-    }
-    
-    // Calculate the ratio: actual prompt / our raw count
-    // This accounts for ST's formatting overhead per message
-    if (allMessageTokens > 0) {
-        MESSAGE_TOKEN_RATIO = previousPromptSize / allMessageTokens;
-        debug(`Message token ratio: ${MESSAGE_TOKEN_RATIO.toFixed(3)} (${previousPromptSize} actual / ${allMessageTokens} raw)`);
-    }
-    
-    // Now count messages from truncation index with the ratio applied
-    let keptMessageTokens = 0;
-    for (let i = currentTruncationIndex; i < chat.length; i++) {
-        if (!chat[i].is_system) {
-            keptMessageTokens += count_tokens(chat[i].mes);
-        }
-    }
-    keptMessageTokens *= MESSAGE_TOKEN_RATIO;
-    
-    // System overhead = total prompt - kept message tokens
-    const overhead = previousPromptSize - keptMessageTokens;
-    
-    debug(`Calculated system overhead: ${overhead.toFixed(0)} tokens (${previousPromptSize} total - ${keptMessageTokens.toFixed(0)} kept messages from index ${currentTruncationIndex})`);
-    
-    return Math.max(overhead, 500); // Minimum 500 tokens
 }
 
-// Truncation logic
+function save_truncation_index() {
+    if (!chat_metadata[MODULE_NAME]) {
+        chat_metadata[MODULE_NAME] = {};
+    }
+    chat_metadata[MODULE_NAME].truncation_index = TRUNCATION_INDEX;
+    debug(`Saved truncation index: ${TRUNCATION_INDEX}`);
+    saveMetadataDebounced();
+}
+
 function reset_truncation_index() {
     debug('Resetting truncation index');
     TRUNCATION_INDEX = null;
     save_truncation_index();
 }
 
-function should_truncate() {
-    const previousSize = get_previous_prompt_size();
-    const targetSize = get_settings('target_context_size');
-    
-    const shouldTrunc = previousSize > targetSize;
-    debug(`Should truncate: ${shouldTrunc} (${previousSize} > ${targetSize})`);
-    
-    return shouldTrunc;
-}
-
-function estimate_size_after_truncation(chat, truncateUpTo) {
-    let total = 0;
-    
-    // Count messages from truncateUpTo onwards
-    for (let i = truncateUpTo; i < chat.length; i++) {
-        if (!chat[i].is_system) {
-            total += count_tokens(chat[i].mes);
-        }
-    }
-    
-    // Apply the ratio to account for ST's formatting overhead
-    total *= MESSAGE_TOKEN_RATIO;
-    
-    // Add dynamically calculated system overhead
-    total += SYSTEM_OVERHEAD;
-    
-    return total;
-}
-
-function apply_truncation(chat, truncateUpTo) {
-    const originalLength = chat.length;
-    debug(`Applying truncation: marking first ${truncateUpTo} messages for exclusion. Total messages: ${originalLength}`);
-    
-    // Get the IGNORE_SYMBOL from SillyTavern's context
+// Calculate truncation index based on target context size
+function calculate_truncation_index() {
     const ctx = getContext();
-    const IGNORE_SYMBOL = ctx.symbols.ignore;
-    
-    // Mark messages for exclusion using ST's ignore symbol
-    // Following MessageSummarize's pattern (line 4105-4111)
-    for (let i = originalLength - 1; i >= 0; i--) {
-        // Delete ignore_formatting to prevent conflicts
-        delete chat[i].extra?.ignore_formatting;
-        
-        // Clone the message to keep changes temporary
-        chat[i] = structuredClone(chat[i]);
-        
-        // Initialize extra object if it doesn't exist
-        if (!chat[i].extra) {
-            chat[i].extra = {};
-        }
-        
-        // Set ignore flag: TRUE = ignore, FALSE = keep
-        // Ignore messages BEFORE truncation index
-        chat[i].extra[IGNORE_SYMBOL] = i < truncateUpTo;
-    }
-    
-    const keptCount = originalLength - truncateUpTo;
-    debug(`Truncation complete. Marked ${truncateUpTo} messages to ignore, keeping ${keptCount} messages`);
-    
-    return chat;
-}
-
-function perform_batch_truncation(chat, currentContextSize) {
+    const chat = ctx.chat;
+    const targetSize = get_settings('target_context_size');
     const batchSize = get_settings('batch_size');
     const minKeep = get_settings('min_messages_to_keep');
-    const targetSize = get_settings('target_context_size');
     
-    // Load truncation index from metadata if not already loaded
-    if (TRUNCATION_INDEX === null) {
-        load_truncation_index();
+    // Get previous prompt size
+    const previousSize = get_previous_prompt_size();
+    
+    if (previousSize === 0) {
+        debug('No previous prompt, cannot calculate truncation');
+        return 0;
     }
     
-    // Initialize to 0 if still null
-    if (TRUNCATION_INDEX === null) {
-        TRUNCATION_INDEX = 0;
+    debug(`Calculating truncation index. Previous: ${previousSize}, Target: ${targetSize}`);
+    
+    // If we're under target, no truncation needed
+    if (previousSize <= targetSize) {
+        debug('Under target, no truncation needed');
+        return 0;
     }
     
-    const chatLength = chat.length;
-    const maxTruncateUpTo = Math.max(chatLength - minKeep, 0);
+    // Calculate how many tokens to remove
+    const tokensToRemove = previousSize - targetSize;
+    debug(`Need to remove ${tokensToRemove} tokens`);
     
-    debug(`Starting batch truncation. Chat length: ${chatLength}, Max truncate: ${maxTruncateUpTo}, Current index: ${TRUNCATION_INDEX}`);
-    
-    // If we already have a truncation index, just maintain it (don't recalculate)
-    if (TRUNCATION_INDEX > 0) {
-        debug(`Using existing truncation index: ${TRUNCATION_INDEX}`);
-        save_truncation_index();
-        return apply_truncation(chat, TRUNCATION_INDEX);
-    }
-    
-    // Only calculate truncation index if we don't have one yet
-    // Use contextSize (from Qdrant/ST) which represents FULL size before truncation
-    const fullSize = currentContextSize || 60000;  // Fallback to reasonable default
-    const tokensToRemove = fullSize - targetSize;
-    
-    debug(`First truncation: Full size: ${fullSize}, Target: ${targetSize}, Need to remove: ${tokensToRemove} tokens`);
-    
-    // Count all message tokens to calculate average tokens per message
-    let totalMessageTokens = 0;
+    // Estimate average tokens per message
+    let totalTokens = 0;
     let messageCount = 0;
     for (let i = 0; i < chat.length; i++) {
         if (!chat[i].is_system) {
-            totalMessageTokens += count_tokens(chat[i].mes);
+            totalTokens += count_tokens(chat[i].mes);
             messageCount++;
         }
     }
     
-    const avgTokensPerMessage = messageCount > 0 ? totalMessageTokens / messageCount : 0;
-    debug(`Average tokens per message: ${avgTokensPerMessage.toFixed(0)} (${totalMessageTokens} total / ${messageCount} messages)`);
+    const avgTokensPerMessage = messageCount > 0 ? totalTokens / messageCount : 0;
+    debug(`Average tokens per message: ${avgTokensPerMessage.toFixed(0)}`);
     
-    // Estimate how many messages to truncate based on tokens to remove
+    // Estimate messages to truncate
     const messagesToTruncate = Math.ceil(tokensToRemove / avgTokensPerMessage);
-    debug(`Need to remove ${tokensToRemove} tokens, estimated ${messagesToTruncate} messages`);
+    debug(`Estimated messages to truncate: ${messagesToTruncate}`);
     
-    // If we need to truncate more
-    if (tokensToRemove > 0) {
-        // Move forward in batches
-        const targetIndex = Math.min(
-            TRUNCATION_INDEX + Math.max(messagesToTruncate, batchSize),
-            maxTruncateUpTo
-        );
-        
-        debug(`Moving truncation index from ${TRUNCATION_INDEX} to ${targetIndex}`);
-        TRUNCATION_INDEX = targetIndex;
+    // Round up to nearest batch
+    const batchesToTruncate = Math.ceil(messagesToTruncate / batchSize);
+    const newIndex = Math.min(
+        batchesToTruncate * batchSize,
+        Math.max(chat.length - minKeep, 0)
+    );
+    
+    debug(`New truncation index: ${newIndex} (${batchesToTruncate} batches)`);
+    return newIndex;
+}
+
+// Update message inclusion flags (determines which messages to keep/exclude)
+function update_message_inclusion_flags() {
+    const ctx = getContext();
+    const chat = ctx.chat;
+    
+    debug("Updating message inclusion flags");
+    
+    // Load truncation index
+    if (TRUNCATION_INDEX === null) {
+        load_truncation_index();
     }
-    // If we're over-truncated and can un-truncate
-    else if (tokensToRemove < 0 && TRUNCATION_INDEX > 0) {
-        // We have room to un-truncate
-        const messagesToRestore = Math.floor(Math.abs(tokensToRemove) / avgTokensPerMessage);
-        const targetIndex = Math.max(
-            TRUNCATION_INDEX - Math.max(messagesToRestore, batchSize),
-            0
-        );
-        
-        debug(`Moving truncation index backward from ${TRUNCATION_INDEX} to ${targetIndex}`);
-        TRUNCATION_INDEX = targetIndex;
+    
+    // Calculate new truncation index if needed
+    if (TRUNCATION_INDEX === null || TRUNCATION_INDEX === 0) {
+        TRUNCATION_INDEX = calculate_truncation_index();
+        save_truncation_index();
     }
     
-    // Save the truncation index after adjusting it
-    save_truncation_index();
+    debug(`Truncation index: ${TRUNCATION_INDEX}`);
     
-    // Apply truncation to chat
-    return apply_truncation(chat, TRUNCATION_INDEX);
+    // Mark messages as lagging (excluded) or not
+    for (let i = 0; i < chat.length; i++) {
+        const lagging = i < TRUNCATION_INDEX;
+        set_data(chat[i], 'lagging', lagging);
+        
+        // If lagging and has no summary, mark for summarization
+        if (lagging && !get_memory(chat[i]) && !chat[i].is_system) {
+            set_data(chat[i], 'needs_summary', true);
+        }
+    }
+}
+
+// Concatenate summaries
+function concatenate_summaries(indexes) {
+    const ctx = getContext();
+    const chat = ctx.chat;
+    const separator = get_settings('summary_injection_separator');
+    
+    let summary = "";
+    for (let i of indexes) {
+        const memory = get_memory(chat[i]);
+        if (memory) {
+            summary += separator + memory;
+        }
+    }
+    
+    return summary;
+}
+
+// Collect messages that need summaries injected
+function collect_summary_indexes() {
+    const ctx = getContext();
+    const chat = ctx.chat;
+    const indexes = [];
+    
+    for (let i = 0; i < chat.length; i++) {
+        const lagging = get_data(chat[i], 'lagging');
+        const memory = get_memory(chat[i]);
+        
+        if (lagging && memory) {
+            indexes.push(i);
+        }
+    }
+    
+    return indexes;
+}
+
+// Get summary injection text
+function get_summary_injection() {
+    const indexes = collect_summary_indexes();
+    
+    if (indexes.length === 0) {
+        return "";
+    }
+    
+    const summaries = concatenate_summaries(indexes);
+    const template = get_settings('summary_injection_template');
+    
+    return template.replace('{{summaries}}', summaries);
+}
+
+// Refresh memory state (called before generation)
+function refresh_memory() {
+    const ctx = getContext();
+    
+    if (!get_settings('enabled')) {
+        ctx.setExtensionPrompt(`${MODULE_NAME}_summaries`, "");
+        return;
+    }
+    
+    debug("Refreshing memory");
+    
+    // Update which messages to keep/exclude
+    update_message_inclusion_flags();
+    
+    // Get summary injection text
+    const injection = get_summary_injection();
+    
+    // Inject summaries
+    ctx.setExtensionPrompt(
+        `${MODULE_NAME}_summaries`,
+        injection,
+        get_settings('injection_position'),
+        get_settings('injection_depth'),
+        false,
+        get_settings('injection_role')
+    );
+    
+    debug(`Injected ${collect_summary_indexes().length} summaries`);
 }
 
 // Message interception hook (called by SillyTavern before generation)
@@ -341,147 +370,183 @@ globalThis.truncator_intercept_messages = function (chat, contextSize, abort, ty
         return chat;
     }
     
+    // Refresh memory state (calculates truncation, sets flags)
+    refresh_memory();
+    
     debug(`Intercepting messages. Type: ${type}, Context: ${contextSize}`);
-    
-    // Calculate truncation index
-    const batchSize = get_settings('batch_size');
-    const minKeep = get_settings('min_messages_to_keep');
-    const targetSize = get_settings('target_context_size');
-    
-    // Load truncation index from metadata if not already loaded
-    if (TRUNCATION_INDEX === null) {
-        load_truncation_index();
-    }
-    
-    // Initialize to 0 if still null
-    if (TRUNCATION_INDEX === null) {
-        TRUNCATION_INDEX = 0;
-    }
-    
-    const chatLength = chat.length;
-    const maxTruncateUpTo = Math.max(chatLength - minKeep, 0);
-    
-    debug(`Intercept: Chat length: ${chatLength}, Truncation index: ${TRUNCATION_INDEX}`);
-    
-    // If we already have a truncation index, use it
-    if (TRUNCATION_INDEX > 0) {
-        debug(`Using existing truncation index: ${TRUNCATION_INDEX}`);
-    } else {
-        // Calculate new truncation index
-        const fullSize = contextSize || 60000;
-        const tokensToRemove = fullSize - targetSize;
-        
-        if (tokensToRemove > 0) {
-            // Count message tokens to estimate
-            let totalMessageTokens = 0;
-            let messageCount = 0;
-            for (let i = 0; i < chat.length; i++) {
-                if (!chat[i].is_system) {
-                    totalMessageTokens += count_tokens(chat[i].mes);
-                    messageCount++;
-                }
-            }
-            
-            const avgTokensPerMessage = messageCount > 0 ? totalMessageTokens / messageCount : 0;
-            const messagesToTruncate = Math.ceil(tokensToRemove / avgTokensPerMessage);
-            
-            TRUNCATION_INDEX = Math.min(
-                Math.max(messagesToTruncate, batchSize),
-                maxTruncateUpTo
-            );
-            
-            debug(`Calculated new truncation index: ${TRUNCATION_INDEX}`);
-            save_truncation_index();
-        }
-    }
-    
-    // Get the IGNORE_SYMBOL from SillyTavern's context
-    const ctx = getContext();
-    const IGNORE_SYMBOL = ctx.symbols.ignore;
     
     // Determine which messages to process
     let start = chat.length - 1;
     if (type === 'continue') start--;
     
-    // Mark messages with IGNORE_SYMBOL following MessageSummarize's exact pattern
+    // Get IGNORE_SYMBOL
+    const ctx = getContext();
+    const IGNORE_SYMBOL = ctx.symbols.ignore;
+    
+    // Mark messages with IGNORE_SYMBOL based on lagging flag
     for (let i = start; i >= 0; i--) {
-        // Delete ignore_formatting to prevent conflicts (MessageSummarize line 4106)
         delete chat[i].extra?.ignore_formatting;
         
-        // Clone the message to keep changes temporary (MessageSummarize line 4109)
+        const message = chat[i];
+        const lagging = get_data(message, 'lagging');
+        
         chat[i] = structuredClone(chat[i]);
-        
-        // Determine if this message should be kept
-        // Messages at index >= TRUNCATION_INDEX are kept, others are ignored
-        const shouldKeep = i >= TRUNCATION_INDEX;
-        
-        // Set IGNORE_SYMBOL (MessageSummarize line 4110)
-        // TRUE = ignore (remove from context), FALSE = keep
-        if (!chat[i].extra) {
-            chat[i].extra = {};
-        }
-        chat[i].extra[IGNORE_SYMBOL] = !shouldKeep;
+        chat[i].extra[IGNORE_SYMBOL] = !lagging;  // TRUE = keep, FALSE = ignore
     }
     
-    debug(`Applied IGNORE_SYMBOL to ${TRUNCATION_INDEX} messages (marked for exclusion)`);
-    
-    // Inject placeholder summary for truncated messages
-    if (TRUNCATION_INDEX > 0) {
-        const summaryText = `[${TRUNCATION_INDEX} earlier messages truncated to save context]`;
-        
-        // Inject as extension prompt (MessageSummarize lines 4143-4144)
-        ctx.setExtensionPrompt(
-            `${MODULE_NAME}_truncation_notice`,
-            summaryText,
-            1,  // position: IN_PROMPT
-            4,  // depth
-            false,  // scan
-            0  // role: SYSTEM
-        );
-        
-        debug(`Injected truncation notice: "${summaryText}"`);
-    } else {
-        // Clear the extension prompt if no truncation
-        ctx.setExtensionPrompt(`${MODULE_NAME}_truncation_notice`, "", 1, 4, false, 0);
-        debug(`No truncation needed, cleared extension prompt`);
-    }
+    debug(`Applied IGNORE_SYMBOL based on lagging flags`);
     
     return chat;
 };
 
-// Status display updates
-function update_status_display() {
-    const currentSize = get_previous_prompt_size();
-    const targetSize = get_settings('target_context_size');
-    const batchSize = get_settings('batch_size');
-    const ctx = getContext();
-    const chat = ctx.chat;
+// Summarization functionality
+class SummaryQueue {
+    constructor() {
+        this.queue = [];
+        this.active = false;
+    }
     
-    $('#ct_current_size').text(currentSize);
-    $('#ct_target_display').text(targetSize);
-    $('#ct_batch_display').text(batchSize);
-    $('#ct_truncation_index').text(TRUNCATION_INDEX ?? 'None');
-    $('#ct_total_messages').text(chat.length);
-    $('#ct_kept_messages').text(TRUNCATION_INDEX !== null ? chat.length - TRUNCATION_INDEX : chat.length);
+    async summarize(indexes) {
+        if (!Array.isArray(indexes)) {
+            indexes = [indexes];
+        }
+        
+        for (let index of indexes) {
+            this.queue.push(index);
+        }
+        
+        if (!this.active) {
+            await this.process();
+        }
+    }
     
-    // Color coding: Red if >110% of target, Yellow if within ±10%, Green if <90%
-    const lowerBound = targetSize * 0.9;   // 90% of target
-    const upperBound = targetSize * 1.1;   // 110% of target
+    async process() {
+        this.active = true;
+        
+        while (this.queue.length > 0) {
+            const index = this.queue.shift();
+            await this.summarize_message(index);
+        }
+        
+        this.active = false;
+    }
     
-    if (currentSize > upperBound) {
-        // Over 110% of target - RED
-        $('#ct_current_size').css('color', '#ff4444');
-    } else if (currentSize < lowerBound) {
-        // Under 90% of target - GREEN
-        $('#ct_current_size').css('color', '#44ff44');
-    } else {
-        // Within ±10% of target - YELLOW
-        $('#ct_current_size').css('color', '#ffdd44');
+    async summarize_message(index) {
+        const ctx = getContext();
+        const message = ctx.chat[index];
+        
+        if (!message || message.is_system) {
+            return;
+        }
+        
+        debug(`Summarizing message ${index}...`);
+        
+        // Create summary prompt
+        const prompt_template = get_settings('summary_prompt');
+        const prompt = prompt_template.replace('{{message}}', message.mes);
+        
+        // Generate summary
+        try {
+            const messages = [{
+                role: 'system',
+                content: prompt
+            }];
+            
+            const result = await ctx.generateRaw(prompt, '', false, false);
+            
+            if (result) {
+                let summary = result;
+                
+                // Trim incomplete sentences if enabled
+                if (ctx.powerUserSettings.trim_sentences) {
+                    summary = trimToEndSentence(summary);
+                }
+                
+                // Store summary
+                set_data(message, 'memory', summary);
+                set_data(message, 'needs_summary', false);
+                set_data(message, 'hash', getStringHash(message.mes));
+                
+                debug(`Summarized message ${index}: "${summary}"`);
+            }
+        } catch (e) {
+            error(`Failed to summarize message ${index}:`, e);
+            set_data(message, 'error', String(e));
+        }
+        
+        // Refresh memory after summarization
+        refresh_memory();
     }
 }
 
+const summaryQueue = new SummaryQueue();
+
+// Auto-summarization
+async function auto_summarize_chat() {
+    const ctx = getContext();
+    const chat = ctx.chat;
+    
+    if (!get_settings('auto_summarize')) {
+        return;
+    }
+    
+    debug('Auto-summarizing chat...');
+    
+    // Find messages that need summaries
+    const to_summarize = [];
+    for (let i = 0; i < chat.length; i++) {
+        if (get_data(chat[i], 'needs_summary')) {
+            to_summarize.push(i);
+        }
+    }
+    
+    if (to_summarize.length > 0) {
+        debug(`Auto-summarizing ${to_summarize.length} messages`);
+        await summaryQueue.summarize(to_summarize);
+    }
+}
+
+// Event listeners
+function register_event_listeners() {
+    log('Registering event listeners...');
+    
+    const ctx = getContext();
+    const eventSource = ctx.eventSource;
+    const event_types = ctx.event_types;
+    
+    let currentChatId = null;
+    
+    // Reset truncation when switching chats
+    eventSource.on(event_types.CHAT_CHANGED, () => {
+        const newChatId = ctx.chatId;
+        if (currentChatId !== null && currentChatId !== newChatId) {
+            debug('Chat switched, loading truncation index');
+            TRUNCATION_INDEX = null;
+            load_truncation_index();
+        }
+        currentChatId = newChatId;
+        refresh_memory();
+    });
+    
+    // Reset when messages deleted
+    eventSource.on(event_types.MESSAGE_DELETED, () => {
+        reset_truncation_index();
+        refresh_memory();
+    });
+    
+    // Auto-summarize on new messages
+    eventSource.on(event_types.CHARACTER_MESSAGE_RENDERED, async (id) => {
+        if (streamingProcessor && !streamingProcessor.isFinished) return;
+        await auto_summarize_chat();
+    });
+    
+    eventSource.on(event_types.USER_MESSAGE_RENDERED, async (id) => {
+        await auto_summarize_chat();
+    });
+}
+
 // UI binding
-function bind_setting(selector, key, type = 'text', callback = null) {
+function bind_setting(selector, key, type = 'text') {
     const element = $(selector);
     
     if (element.length === 0) {
@@ -509,12 +574,7 @@ function bind_setting(selector, key, type = 'text', callback = null) {
         
         debug(`Setting [${key}] changed to [${value}]`);
         set_settings(key, value);
-        
-        if (callback) {
-            callback(value);
-        }
-        
-        update_status_display();
+        refresh_memory();
     });
 }
 
@@ -525,61 +585,34 @@ function initialize_ui_listeners() {
     bind_setting('#ct_target_size', 'target_context_size', 'number');
     bind_setting('#ct_batch_size', 'batch_size', 'number');
     bind_setting('#ct_min_keep', 'min_messages_to_keep', 'number');
+    bind_setting('#ct_auto_summarize', 'auto_summarize', 'boolean');
     bind_setting('#ct_debug', 'debug_mode', 'boolean');
     
     // Reset button
     $('#ct_reset').on('click', () => {
         reset_truncation_index();
-        update_status_display();
         toastr.info('Truncation index reset', MODULE_NAME_FANCY);
     });
     
-    // Refresh status button
-    $('#ct_refresh_status').on('click', () => {
-        update_status_display();
-    });
-    
-    // Update status periodically
-    setInterval(update_status_display, 3000);
-}
-
-// Event listeners
-function register_event_listeners() {
-    log('Registering event listeners...');
-    
-    const ctx = getContext();
-    const eventSource = ctx.eventSource;
-    const event_types = ctx.event_types;
-    
-    // Track the current chat to detect actual chat switches
-    let currentChatId = null;
-    
-    // Reset truncation when switching to a different chat
-    eventSource.on(event_types.CHAT_CHANGED, () => {
-        const newChatId = ctx.chatId;
-        if (currentChatId !== null && currentChatId !== newChatId) {
-            debug('Chat switched, loading truncation index for new chat');
-            TRUNCATION_INDEX = null;  // Reset to force reload
-            load_truncation_index();
-        } else {
-            debug('Chat changed (same chat), keeping truncation index');
+    // Summarize all button
+    $('#ct_summarize_all').on('click', async () => {
+        const ctx = getContext();
+        const chat = ctx.chat;
+        const indexes = [];
+        
+        for (let i = 0; i < chat.length; i++) {
+            if (!chat[i].is_system && !get_memory(chat[i])) {
+                indexes.push(i);
+            }
         }
-        currentChatId = newChatId;
-        update_status_display();
-    });
-    
-    // Reset when messages are deleted
-    eventSource.on(event_types.MESSAGE_DELETED, () => {
-        debug('Message deleted, resetting truncation');
-        reset_truncation_index();
-        update_status_display();
-    });
-    
-    // Log generation events for debugging
-    eventSource.on(event_types.GENERATION_STARTED, (type) => {
-        debug(`Generation started: ${type}`);
-        const size = get_previous_prompt_size();
-        debug(`Current context size: ${size} tokens`);
+        
+        if (indexes.length > 0) {
+            toastr.info(`Summarizing ${indexes.length} messages...`, MODULE_NAME_FANCY);
+            await summaryQueue.summarize(indexes);
+            toastr.success('Summarization complete', MODULE_NAME_FANCY);
+        } else {
+            toastr.info('All messages already summarized', MODULE_NAME_FANCY);
+        }
     });
 }
 
@@ -600,7 +633,7 @@ async function load_settings_html() {
 
 // Entry point
 jQuery(async function () {
-    log('Loading Context Truncator extension...');
+    log('Loading Context Truncator with Summarization...');
     
     // Initialize
     initialize_settings();
@@ -608,12 +641,9 @@ jQuery(async function () {
     // Load settings HTML
     await load_settings_html();
     
-    // Setup UI
+    // Setup UI and events
     initialize_ui_listeners();
     register_event_listeners();
-    
-    // Initial status update
-    update_status_display();
     
     log('Context Truncator loaded successfully');
 });

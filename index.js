@@ -37,6 +37,7 @@ const default_settings = {
 
 // Global state
 let TRUNCATION_INDEX = null;  // Current truncation position
+let SYSTEM_OVERHEAD = 500;    // Estimated system prompt overhead (dynamically calculated)
 
 // Utility functions
 function log(...args) {
@@ -118,6 +119,30 @@ function get_previous_prompt_size() {
     return size;
 }
 
+// Calculate system overhead by comparing full prompt with message tokens
+function calculate_system_overhead(chat) {
+    const previousPromptSize = get_previous_prompt_size();
+    
+    if (previousPromptSize === 0) {
+        return SYSTEM_OVERHEAD; // Use default if no previous prompt
+    }
+    
+    // Count all message tokens
+    let messageTokens = 0;
+    for (let i = 0; i < chat.length; i++) {
+        if (!chat[i].is_system) {
+            messageTokens += count_tokens(chat[i].mes);
+        }
+    }
+    
+    // System overhead = total prompt - message tokens
+    const overhead = previousPromptSize - messageTokens;
+    
+    debug(`Calculated system overhead: ${overhead} tokens (${previousPromptSize} total - ${messageTokens} messages)`);
+    
+    return Math.max(overhead, 500); // Minimum 500 tokens
+}
+
 // Truncation logic
 function reset_truncation_index() {
     debug('Resetting truncation index');
@@ -143,8 +168,8 @@ function estimate_size_after_truncation(chat, truncateUpTo) {
         }
     }
     
-    // Add overhead estimate for system prompts, etc.
-    total += 500;
+    // Add dynamically calculated system overhead
+    total += SYSTEM_OVERHEAD;
     
     return total;
 }
@@ -175,6 +200,9 @@ function perform_batch_truncation(chat) {
     const batchSize = get_settings('batch_size');
     const minKeep = get_settings('min_messages_to_keep');
     const targetSize = get_settings('target_context_size');
+    
+    // Calculate system overhead dynamically
+    SYSTEM_OVERHEAD = calculate_system_overhead(chat);
     
     // Initialize truncation index if not set
     if (TRUNCATION_INDEX === null) {

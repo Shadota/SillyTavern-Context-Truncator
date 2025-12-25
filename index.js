@@ -42,9 +42,12 @@ let SYSTEM_OVERHEAD = 500;    // Estimated system prompt overhead (dynamically c
 // Load truncation index from chat metadata
 function load_truncation_index() {
     const ctx = getContext();
+    debug(`Attempting to load truncation index. chat_metadata[${MODULE_NAME}]:`, chat_metadata[MODULE_NAME]);
     if (chat_metadata[MODULE_NAME]?.truncation_index !== undefined) {
         TRUNCATION_INDEX = chat_metadata[MODULE_NAME].truncation_index;
         debug(`Loaded truncation index from metadata: ${TRUNCATION_INDEX}`);
+    } else {
+        debug(`No truncation index found in metadata`);
     }
 }
 
@@ -263,11 +266,6 @@ function perform_batch_truncation(chat, currentContextSize) {
     
     // Calculate how many tokens we need to remove
     const tokensToRemove = currentSize - targetSize;
-    
-    if (tokensToRemove <= 0 && TRUNCATION_INDEX === 0) {
-        debug(`Already under target, no truncation needed`);
-        return chat;
-    }
     
     // Count all message tokens to calculate average tokens per message
     let totalMessageTokens = 0;

@@ -219,33 +219,37 @@ function calculate_truncation_index() {
     const batchSize = get_settings('batch_size');
     const minKeep = get_settings('min_messages_to_keep');
     
-    // Get previous prompt size
-    const previousPromptSize = get_previous_prompt_size();
+    // Use current context size from intercept
+    const currentPromptSize = CURRENT_CONTEXT_SIZE;
     
-    if (previousPromptSize === 0) {
-        debug('No previous prompt, cannot calculate truncation');
+    if (currentPromptSize === 0) {
+        debug('No context size available, cannot calculate truncation');
         return 0;
     }
     
-    // Calculate chat history size (sum of all message tokens)
+    // Calculate chat history size (sum of all NON-TRUNCATED message tokens)
     let chatHistorySize = 0;
     let messageCount = 0;
     for (let i = 0; i < chat.length; i++) {
         if (!chat[i].is_system) {
-            chatHistorySize += count_tokens(chat[i].mes);
-            messageCount++;
+            // Only count messages that are currently in context (not lagging)
+            const isLagging = get_data(chat[i], 'lagging');
+            if (!isLagging) {
+                chatHistorySize += count_tokens(chat[i].mes);
+                messageCount++;
+            }
         }
     }
     
     // Calculate system prompt overhead (everything except chat history)
-    const systemOverhead = previousPromptSize - chatHistorySize;
+    const systemOverhead = currentPromptSize - chatHistorySize;
     
     // Calculate target chat history size
     const targetChatHistorySize = targetSize - systemOverhead;
     
     debug(`Calculating truncation index:`);
-    debug(`  Full prompt: ${previousPromptSize} tokens`);
-    debug(`  Chat history: ${chatHistorySize} tokens`);
+    debug(`  Current full prompt: ${currentPromptSize} tokens`);
+    debug(`  Current chat history (non-truncated): ${chatHistorySize} tokens`);
     debug(`  System overhead: ${systemOverhead} tokens`);
     debug(`  Target full: ${targetSize} tokens`);
     debug(`  Target chat history: ${targetChatHistorySize} tokens`);
@@ -260,7 +264,7 @@ function calculate_truncation_index() {
     const tokensToRemove = chatHistorySize - targetChatHistorySize;
     debug(`  Need to remove ${tokensToRemove} tokens from chat history`);
     
-    // Calculate average tokens per message
+    // Calculate average tokens per message (from non-truncated messages)
     const avgTokensPerMessage = messageCount > 0 ? chatHistorySize / messageCount : 0;
     debug(`  Average tokens per message: ${avgTokensPerMessage.toFixed(0)}`);
     
@@ -270,12 +274,16 @@ function calculate_truncation_index() {
     
     // Round up to nearest batch
     const batchesToTruncate = Math.ceil(messagesToTruncate / batchSize);
+    
+    // Calculate new index (add to existing truncation)
+    const currentTruncationIndex = TRUNCATION_INDEX || 0;
     const newIndex = Math.min(
-        batchesToTruncate * batchSize,
+        currentTruncationIndex + (batchesToTruncate * batchSize),
         Math.max(chat.length - minKeep, 0)
     );
     
-    debug(`  New truncation index: ${newIndex} (${batchesToTruncate} batches)`);
+    debug(`  Current truncation index: ${currentTruncationIndex}`);
+    debug(`  New truncation index: ${newIndex} (adding ${batchesToTruncate} batches)`);
     return newIndex;
 }
 
@@ -396,11 +404,17 @@ function refresh_memory() {
     debug(`Injected ${collect_summary_indexes().length} summaries`);
 }
 
+// Global variable to store context size from intercept
+let CURRENT_CONTEXT_SIZE = 0;
+
 // Message interception hook (called by SillyTavern before generation)
 globalThis.truncator_intercept_messages = function (chat, contextSize, abort, type) {
     if (!get_settings('enabled')) {
         return chat;
     }
+    
+    // Store context size for calculation
+    CURRENT_CONTEXT_SIZE = contextSize;
     
     // Refresh memory state (calculates truncation, sets flags)
     refresh_memory();

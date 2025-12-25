@@ -227,45 +227,31 @@ function calculate_truncation_index() {
         return 0;
     }
     
-    // Calculate chat history size (sum of all NON-TRUNCATED message tokens)
-    let chatHistorySize = 0;
-    let messageCount = 0;
-    for (let i = 0; i < chat.length; i++) {
-        if (!chat[i].is_system) {
-            // Only count messages that are currently in context (not lagging)
-            const isLagging = get_data(chat[i], 'lagging');
-            if (!isLagging) {
-                chatHistorySize += count_tokens(chat[i].mes);
-                messageCount++;
-            }
-        }
-    }
-    
-    // Calculate system prompt overhead (everything except chat history)
-    const systemOverhead = currentPromptSize - chatHistorySize;
-    
-    // Calculate target chat history size
-    const targetChatHistorySize = targetSize - systemOverhead;
-    
     debug(`Calculating truncation index:`);
     debug(`  Current full prompt: ${currentPromptSize} tokens`);
-    debug(`  Current chat history (non-truncated): ${chatHistorySize} tokens`);
-    debug(`  System overhead: ${systemOverhead} tokens`);
     debug(`  Target full: ${targetSize} tokens`);
-    debug(`  Target chat history: ${targetChatHistorySize} tokens`);
     
-    // If chat history is under target, no truncation needed
-    if (chatHistorySize <= targetChatHistorySize) {
-        debug('Chat history under target, no truncation needed');
+    // If we're under target, no truncation needed
+    if (currentPromptSize <= targetSize) {
+        debug('Under target, no truncation needed');
         return 0;
     }
     
-    // Calculate how many tokens to remove from chat history
-    const tokensToRemove = chatHistorySize - targetChatHistorySize;
-    debug(`  Need to remove ${tokensToRemove} tokens from chat history`);
+    // Calculate how many tokens to remove
+    const tokensToRemove = currentPromptSize - targetSize;
+    debug(`  Need to remove ${tokensToRemove} tokens`);
     
-    // Calculate average tokens per message (from non-truncated messages)
-    const avgTokensPerMessage = messageCount > 0 ? chatHistorySize / messageCount : 0;
+    // Calculate average tokens per message from ALL messages
+    let totalTokens = 0;
+    let messageCount = 0;
+    for (let i = 0; i < chat.length; i++) {
+        if (!chat[i].is_system) {
+            totalTokens += count_tokens(chat[i].mes);
+            messageCount++;
+        }
+    }
+    
+    const avgTokensPerMessage = messageCount > 0 ? totalTokens / messageCount : 0;
     debug(`  Average tokens per message: ${avgTokensPerMessage.toFixed(0)}`);
     
     // Estimate messages to truncate

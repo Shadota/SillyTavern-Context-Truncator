@@ -343,7 +343,7 @@ globalThis.truncator_intercept_messages = function (chat, contextSize, abort, ty
     
     debug(`Intercepting messages. Type: ${type}, Context: ${contextSize}`);
     
-    // Calculate truncation index FIRST
+    // Calculate truncation index
     const batchSize = get_settings('batch_size');
     const minKeep = get_settings('min_messages_to_keep');
     const targetSize = get_settings('target_context_size');
@@ -395,34 +395,41 @@ globalThis.truncator_intercept_messages = function (chat, contextSize, abort, ty
         }
     }
     
-    // Apply IGNORE_SYMBOL to mark messages for exclusion
-    let start = chat.length - 1;
-    if (type === 'continue') start--;
-    
+    // Get the IGNORE_SYMBOL from SillyTavern's context
     const ctx = getContext();
     const IGNORE_SYMBOL = ctx.symbols.ignore;
     
+    // Determine which messages to process
+    let start = chat.length - 1;
+    if (type === 'continue') start--;
+    
+    // Mark messages with IGNORE_SYMBOL following MessageSummarize's exact pattern
     for (let i = start; i >= 0; i--) {
+        // Delete ignore_formatting to prevent conflicts (MessageSummarize line 4106)
         delete chat[i].extra?.ignore_formatting;
         
-        const shouldKeep = i >= TRUNCATION_INDEX;
-        
+        // Clone the message to keep changes temporary (MessageSummarize line 4109)
         chat[i] = structuredClone(chat[i]);
         
+        // Determine if this message should be kept
+        // Messages at index >= TRUNCATION_INDEX are kept, others are ignored
+        const shouldKeep = i >= TRUNCATION_INDEX;
+        
+        // Set IGNORE_SYMBOL (MessageSummarize line 4110)
+        // TRUE = ignore (remove from context), FALSE = keep
         if (!chat[i].extra) {
             chat[i].extra = {};
         }
-        
         chat[i].extra[IGNORE_SYMBOL] = !shouldKeep;
     }
     
-    debug(`Applied IGNORE_SYMBOL to ${TRUNCATION_INDEX} messages`);
+    debug(`Applied IGNORE_SYMBOL to ${TRUNCATION_INDEX} messages (marked for exclusion)`);
     
-    // INJECT A PLACEHOLDER SUMMARY for the truncated messages
+    // Inject placeholder summary for truncated messages
     if (TRUNCATION_INDEX > 0) {
         const summaryText = `[${TRUNCATION_INDEX} earlier messages truncated to save context]`;
         
-        // Inject as extension prompt (like MessageSummarize does)
+        // Inject as extension prompt (MessageSummarize lines 4143-4144)
         ctx.setExtensionPrompt(
             `${MODULE_NAME}_truncation_notice`,
             summaryText,
@@ -433,6 +440,10 @@ globalThis.truncator_intercept_messages = function (chat, contextSize, abort, ty
         );
         
         debug(`Injected truncation notice: "${summaryText}"`);
+    } else {
+        // Clear the extension prompt if no truncation
+        ctx.setExtensionPrompt(`${MODULE_NAME}_truncation_notice`, "", 1, 4, false, 0);
+        debug(`No truncation needed, cleared extension prompt`);
     }
     
     return chat;

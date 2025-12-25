@@ -343,38 +343,30 @@ function calculate_truncation_index() {
         assistant: count_tokens(PROMPT_HEADER_ASSISTANT),
     };
     
-    // Get chat tokens from itemizedPrompts (only from the LAST generation)
-    // itemizedPrompts contains all generations, we need to find the ones for the last message
-    const lastMessageId = chat.length - 1;
+    // Build message token map from last prompt for accurate estimation
+    let last_raw_prompt = get_last_prompt_raw();
+    let message_token_map = get_prompt_message_tokens_from_raw(last_raw_prompt, chat);
+    
+    // Get chat tokens by parsing the raw prompt to find actual chat content
+    // This gives us the ACTUAL chat tokens from the last prompt (after exclusion)
     let promptChatTokens = 0;
-    let itemizedCount = 0;
     
-    // Find itemizedPrompts for the last message
-    for (let i = itemizedPrompts.length - 1; i >= 0; i--) {
-        let itemizedPrompt = itemizedPrompts[i];
-        if (itemizedPrompt?.mesId === lastMessageId) {
-            // Found an itemized prompt for the last message
-            let tokenCount = itemizedPrompt?.tokenCount;
-            if (tokenCount === undefined) {
-                let rawPrompt = itemizedPrompt?.rawPrompt;
-                if (Array.isArray(rawPrompt)) rawPrompt = rawPrompt.map(x => x.content).join('\n');
-                tokenCount = count_tokens(rawPrompt ?? '');
-            }
-            promptChatTokens += tokenCount;
-            itemizedCount++;
-        } else if (itemizedPrompt?.mesId < lastMessageId) {
-            // We've gone past the last message, stop
-            break;
+    if (last_raw_prompt) {
+        // Try to extract chat tokens from raw prompt
+        let segments = get_prompt_chat_segments_from_raw(last_raw_prompt);
+        if (segments && segments.length > 0) {
+            // Sum up all chat segment tokens
+            promptChatTokens = segments.reduce((sum, seg) => sum + seg.tokenCount, 0);
+            debug(`  Calculated chat tokens from ${segments.length} segments: ${promptChatTokens}`);
+        } else {
+            // Fallback: assume 85% is chat
+            promptChatTokens = Math.floor(currentPromptSize * 0.85);
+            debug('  No segments found, using 85% estimate for chat tokens');
         }
-    }
-    
-    debug(`  Found ${itemizedCount} itemizedPrompts for message ${lastMessageId}`);
-    
-    // If we didn't find any itemizedPrompts, use a conservative estimate
-    if (promptChatTokens === 0) {
-        debug('  No itemizedPrompts found, using conservative estimate');
-        // Assume 80% of context is chat, 20% is non-chat (system, character card, etc.)
-        promptChatTokens = Math.floor(currentPromptSize * 0.8);
+    } else {
+        // No raw prompt available, use conservative estimate
+        promptChatTokens = Math.floor(currentPromptSize * 0.85);
+        debug('  No raw prompt, using 85% estimate for chat tokens');
     }
     
     // Calculate non-chat budget (system prompts, character card, etc.)
@@ -383,9 +375,7 @@ function calculate_truncation_index() {
     debug(`  Prompt chat tokens: ${promptChatTokens}`);
     debug(`  Non-chat budget: ${nonChatBudget}`);
     
-    // Build message token map from last prompt for accurate estimation
-    let last_raw_prompt = get_last_prompt_raw();
-    let message_token_map = get_prompt_message_tokens_from_raw(last_raw_prompt, chat);
+    // Track token map usage
     let map_hits = 0;
     let map_misses = 0;
     

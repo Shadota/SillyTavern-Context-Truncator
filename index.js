@@ -405,10 +405,19 @@ function register_event_listeners() {
     const eventSource = ctx.eventSource;
     const event_types = ctx.event_types;
     
-    // Reset truncation when chat changes
+    // Track the current chat to detect actual chat switches
+    let currentChatId = null;
+    
+    // Reset truncation when switching to a different chat
     eventSource.on(event_types.CHAT_CHANGED, () => {
-        debug('Chat changed, resetting truncation');
-        reset_truncation_index();
+        const newChatId = ctx.chatId;
+        if (currentChatId !== null && currentChatId !== newChatId) {
+            debug('Chat switched, resetting truncation');
+            reset_truncation_index();
+        } else {
+            debug('Chat changed (same chat), keeping truncation index');
+        }
+        currentChatId = newChatId;
         update_status_display();
     });
     

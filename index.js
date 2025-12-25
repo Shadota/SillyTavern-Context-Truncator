@@ -247,13 +247,21 @@ function perform_batch_truncation(chat, currentContextSize) {
     const chatLength = chat.length;
     const maxTruncateUpTo = Math.max(chatLength - minKeep, 0);
     
-    // Use contextSize (from ST) as the FULL size before truncation
-    // The previous prompt size is already truncated, so we can't use it for calculation
-    let fullSize = currentContextSize || get_previous_prompt_size();
-    debug(`Starting batch truncation. Full size: ${fullSize}, Target: ${targetSize}, Chat length: ${chatLength}, Max truncate: ${maxTruncateUpTo}, Current index: ${TRUNCATION_INDEX}`);
+    debug(`Starting batch truncation. Chat length: ${chatLength}, Max truncate: ${maxTruncateUpTo}, Current index: ${TRUNCATION_INDEX}`);
     
-    // Calculate how many tokens we need to remove (based on FULL size, not truncated size)
+    // If we already have a truncation index, just maintain it (don't recalculate)
+    if (TRUNCATION_INDEX > 0) {
+        debug(`Using existing truncation index: ${TRUNCATION_INDEX}`);
+        save_truncation_index();
+        return apply_truncation(chat, TRUNCATION_INDEX);
+    }
+    
+    // Only calculate truncation index if we don't have one yet
+    // Use contextSize (from Qdrant/ST) which represents FULL size before truncation
+    const fullSize = currentContextSize || 60000;  // Fallback to reasonable default
     const tokensToRemove = fullSize - targetSize;
+    
+    debug(`First truncation: Full size: ${fullSize}, Target: ${targetSize}, Need to remove: ${tokensToRemove} tokens`);
     
     // Count all message tokens to calculate average tokens per message
     let totalMessageTokens = 0;

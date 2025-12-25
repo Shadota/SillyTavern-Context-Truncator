@@ -229,16 +229,22 @@ function apply_truncation(chat, truncateUpTo) {
     const IGNORE_SYMBOL = ctx.symbols.ignore;
     
     // Mark messages for exclusion using ST's ignore symbol
-    // Clone each message to avoid modifying the permanent chat
-    for (let i = 0; i < chat.length; i++) {
-        chat[i] = structuredClone(chat[i]);  // Keep changes temporary for this generation
+    // Following MessageSummarize's pattern (line 4105-4111)
+    for (let i = originalLength - 1; i >= 0; i--) {
+        // Delete ignore_formatting to prevent conflicts
+        delete chat[i].extra?.ignore_formatting;
+        
+        // Clone the message to keep changes temporary
+        chat[i] = structuredClone(chat[i]);
         
         // Initialize extra object if it doesn't exist
         if (!chat[i].extra) {
             chat[i].extra = {};
         }
         
-        chat[i].extra[IGNORE_SYMBOL] = i < truncateUpTo;  // Ignore if before truncation index
+        // Set ignore flag: TRUE = ignore, FALSE = keep
+        // Ignore messages BEFORE truncation index
+        chat[i].extra[IGNORE_SYMBOL] = i < truncateUpTo;
     }
     
     const keptCount = originalLength - truncateUpTo;

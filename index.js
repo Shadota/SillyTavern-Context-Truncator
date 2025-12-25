@@ -174,6 +174,7 @@ function get_previous_prompt_size() {
 // Parse raw prompt into chat segments with token counts
 function get_prompt_chat_segments_from_raw(raw_prompt) {
     if (!raw_prompt) {
+        debug('  get_prompt_chat_segments_from_raw: No raw prompt');
         return null;
     }
     
@@ -189,7 +190,10 @@ function get_prompt_chat_segments_from_raw(raw_prompt) {
         });
     }
     
+    debug(`  get_prompt_chat_segments_from_raw: Found ${matches.length} header matches`);
+    
     if (matches.length === 0) {
+        debug('  get_prompt_chat_segments_from_raw: No headers found, might not be Llama 3 format');
         return null;
     }
     
@@ -219,8 +223,11 @@ function get_prompt_chat_segments_from_raw(raw_prompt) {
 function get_prompt_message_tokens_from_raw(raw_prompt, chat) {
     let segments = get_prompt_chat_segments_from_raw(raw_prompt);
     if (!segments) {
+        debug('  get_prompt_message_tokens_from_raw: No segments found');
         return null;
     }
+    
+    debug(`  get_prompt_message_tokens_from_raw: Found ${segments.length} segments`);
     
     let map = new Map();
     let segment_index = 0;
@@ -249,6 +256,7 @@ function get_prompt_message_tokens_from_raw(raw_prompt, chat) {
         segment_index += 1;
     }
     
+    debug(`  get_prompt_message_tokens_from_raw: Built map with ${map.size} entries`);
     return map;
 }
 

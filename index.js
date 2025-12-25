@@ -185,25 +185,29 @@ function perform_batch_truncation(chat) {
     
     debug(`Starting batch truncation. Chat length: ${chatLength}, Max truncate: ${maxTruncateUpTo}, Current index: ${TRUNCATION_INDEX}`);
     
-    const currentSize = get_previous_prompt_size();
-    debug(`Current prompt size: ${currentSize}, Target: ${targetSize}`);
+    // Get the size from the PREVIOUS generation (before this interception)
+    const previousSize = get_previous_prompt_size();
+    debug(`Previous generation prompt size: ${previousSize}, Target: ${targetSize}`);
     
-    // Simple logic: If over target, truncate one batch. If under target, un-truncate one batch.
-    // This is more reliable than trying to estimate the final size.
+    // IMPORTANT: We can only check the size from the PREVIOUS generation.
+    // We cannot know the size of the CURRENT generation until it's sent.
+    // So we adjust the truncation index based on the previous size, and the
+    // NEXT generation will tell us if we need to adjust more.
     
-    if (currentSize > targetSize && TRUNCATION_INDEX < maxTruncateUpTo) {
-        // Over target - truncate one batch forward
+    if (previousSize > targetSize && TRUNCATION_INDEX < maxTruncateUpTo) {
+        // Previous generation was over target - truncate one more batch
         const newIndex = Math.min(TRUNCATION_INDEX + batchSize, maxTruncateUpTo);
-        debug(`Over target, truncating batch: index ${TRUNCATION_INDEX} -> ${newIndex}`);
+        debug(`Previous was over target, truncating batch: index ${TRUNCATION_INDEX} -> ${newIndex}`);
         TRUNCATION_INDEX = newIndex;
-    } else if (currentSize < targetSize && TRUNCATION_INDEX > 0) {
-        // Under target - un-truncate one batch backward
+    } else if (previousSize < targetSize && TRUNCATION_INDEX > 0 && previousSize > 0) {
+        // Previous generation was under target - un-truncate one batch
+        // (but only if previousSize > 0, to avoid un-truncating when there's no data)
         const newIndex = Math.max(TRUNCATION_INDEX - batchSize, 0);
-        debug(`Under target, un-truncating batch: index ${TRUNCATION_INDEX} -> ${newIndex}`);
+        debug(`Previous was under target, un-truncating batch: index ${TRUNCATION_INDEX} -> ${newIndex}`);
         TRUNCATION_INDEX = newIndex;
     } else {
         // Within acceptable range or at limits
-        debug(`No truncation change needed. Size: ${currentSize}, Target: ${targetSize}, Index: ${TRUNCATION_INDEX}`);
+        debug(`No truncation change needed. Previous size: ${previousSize}, Target: ${targetSize}, Index: ${TRUNCATION_INDEX}`);
     }
     
     // Apply truncation to chat
@@ -213,7 +217,7 @@ function perform_batch_truncation(chat) {
 // Message interception hook (called by SillyTavern before generation)
 globalThis.truncator_intercept_messages = function (chat, contextSize, abort, type) {
     if (!get_settings('enabled')) {
-        return chat;
+        return;  // Don't return chat, just return nothing
     }
     
     debug(`Intercepting messages. Type: ${type}, Context: ${contextSize}`);
@@ -222,10 +226,8 @@ globalThis.truncator_intercept_messages = function (chat, contextSize, abort, ty
     // This allows both forward (truncate more) and backward (un-truncate) movement
     if (TRUNCATION_INDEX !== null || should_truncate()) {
         debug('Running batch truncation logic');
-        return perform_batch_truncation(chat);
+        perform_batch_truncation(chat);  // Modifies chat in-place, don't return
     }
-    
-    return chat;
 };
 
 // Status display updates

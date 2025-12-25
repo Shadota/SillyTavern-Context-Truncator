@@ -109,12 +109,8 @@ function get_previous_prompt_size() {
     let raw_prompt = get_last_prompt_raw();
     
     if (!raw_prompt) {
-        debug('No previous prompt found, assuming max context size');
-        // Safeguard: If no previous prompt, assume max size to trigger truncation
-        const ctx = getContext();
-        const maxSize = getMaxContextSize();
-        debug(`Using max context size: ${maxSize} tokens`);
-        return maxSize;
+        debug('No previous prompt found, returning 0');
+        return 0;
     }
     
     const size = count_tokens(raw_prompt);

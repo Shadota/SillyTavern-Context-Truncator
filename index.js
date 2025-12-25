@@ -151,18 +151,24 @@ function apply_truncation(chat, truncateUpTo) {
     
     debug(`Applying truncation up to index ${truncateUpTo}`);
     
-    for (let i = 0; i < truncateUpTo && i < chat.length; i++) {
-        if (!chat[i].is_system) {
-            // Clone to avoid permanent modification
-            chat[i] = structuredClone(chat[i]);
-            chat[i].extra[IGNORE_SYMBOL] = true;
-            
-            // Store metadata
-            if (!chat[i].extra[MODULE_NAME]) {
-                chat[i].extra[MODULE_NAME] = {};
-            }
-            chat[i].extra[MODULE_NAME].truncated = true;
+    // Modify chat array in-place (like MessageSummarize does)
+    for (let i = 0; i < chat.length; i++) {
+        if (chat[i].is_system) continue;  // Skip system messages
+        
+        // Delete ignore_formatting to ensure clean state
+        delete chat[i].extra?.ignore_formatting;
+        
+        // Clone to avoid permanent modification
+        chat[i] = structuredClone(chat[i]);
+        
+        // Set IGNORE_SYMBOL based on whether this message should be truncated
+        chat[i].extra[IGNORE_SYMBOL] = i < truncateUpTo;
+        
+        // Store metadata
+        if (!chat[i].extra[MODULE_NAME]) {
+            chat[i].extra[MODULE_NAME] = {};
         }
+        chat[i].extra[MODULE_NAME].truncated = i < truncateUpTo;
     }
     
     return chat;

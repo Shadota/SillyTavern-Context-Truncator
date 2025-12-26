@@ -2,11 +2,37 @@
 
 Intelligent context management with AI-powered summarization and batch-based truncation to prevent cache invalidation when using LLMs with caching support.
 
+> **⚠️ Disclaimer:** This extension is created by a vibe coder, not a professional programmer. Use at your own risk and expect occasional quirks!
+
 ## Credits
 
-This extension is built on the excellent foundation of [**Qvink Memory (MessageSummarize)**](https://github.com/qvink/SillyTavern-MessageSummarize) by **Qvink**. The core summarization functionality, connection profile management, and token-based truncation calculations are adapted from their work. This extension simplifies and focuses on context truncation with optional summarization, while MessageSummarize offers a full-featured memory management system.
+This extension builds upon [**Qvink Memory (MessageSummarize)**](https://github.com/qvink/SillyTavern-MessageSummarize) by **Qvink**. The following components are adapted from their work:
+- AI summarization system with connection profile support
+- Token-based truncation calculation methods
+- Message interception and IGNORE_SYMBOL handling
 
-**Thank you to Qvink for the heavy lifting!**
+This extension simplifies and focuses on context truncation with optional summarization, while MessageSummarize offers a full-featured memory management system.
+
+## Compatibility
+
+**Tested and compatible with:**
+- [**Qdrant Memory (Shadota's Fork)**](https://github.com/Shadota/st-qdrant-memory) - Vector-based memory retrieval
+  - Original by [**Bronya-Rand**](https://github.com/Bronya-Rand/st-qdrant-memory)
+  - This extension safely handles Qdrant's chat modifications
+
+## TODO
+
+Future improvements planned:
+- [ ] Fine-tune token calculation methods for better accuracy
+- [ ] Add progress indicator for summarization operations
+- [ ] Add UI indicators on summarized and hidden messages
+- [ ] Integrate Qdrant functionality from personal fork
+
+## Support
+
+Questions or issues? Reach out:
+- **Discord:** @SunnyBeyond
+- **GitHub:** [Open an issue](https://github.com/Shadota/SillyTavern-Context-Truncator/issues)
 
 ## Purpose
 

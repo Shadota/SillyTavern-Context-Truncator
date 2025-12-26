@@ -933,12 +933,14 @@ function register_event_listeners() {
     eventSource.on(event_types.CHARACTER_MESSAGE_RENDERED, async (id) => {
         if (streamingProcessor && !streamingProcessor.isFinished) return;
         await auto_summarize_chat();
-        update_status_display();
+        // Delay status update to ensure itemizedPrompts is populated
+        setTimeout(() => update_status_display(), 100);
     });
 
     eventSource.on(event_types.USER_MESSAGE_RENDERED, async (id) => {
         await auto_summarize_chat();
-        update_status_display();
+        // Delay status update to ensure itemizedPrompts is populated
+        setTimeout(() => update_status_display(), 100);
     });
 }
 

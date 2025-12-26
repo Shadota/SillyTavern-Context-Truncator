@@ -2,6 +2,12 @@
 
 Intelligent context management with AI-powered summarization and batch-based truncation to prevent cache invalidation when using LLMs with caching support.
 
+## Credits
+
+This extension is built on the excellent foundation of [**Qvink Memory (MessageSummarize)**](https://github.com/qvink/SillyTavern-MessageSummarize) by **Qvink**. The core summarization functionality, connection profile management, and token-based truncation calculations are adapted from their work. This extension simplifies and focuses on context truncation with optional summarization, while MessageSummarize offers a full-featured memory management system.
+
+**Thank you to Qvink for the heavy lifting!**
+
 ## Purpose
 
 When using LLMs with caching (like Claude), removing messages one-by-one invalidates the cache on every generation, causing slower responses and higher costs. This extension intelligently manages context by:

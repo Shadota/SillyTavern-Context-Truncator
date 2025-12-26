@@ -1256,7 +1256,7 @@ function initialize_ui_listeners() {
     $('#ct_delete_collection').on('click', delete_current_collection);
     
     // ==================== SYNERGY SETTINGS ====================
-    bind_setting('#ct_use_summaries_qdrant', 'use_summaries_for_qdrant', 'boolean');
+    bind_setting('#ct_use_summaries_for_qdrant', 'use_summaries_for_qdrant', 'boolean');
     bind_setting('#ct_memory_aware_summaries', 'memory_aware_summaries', 'boolean');
     bind_setting('#ct_account_qdrant_tokens', 'account_qdrant_tokens', 'boolean');
 }

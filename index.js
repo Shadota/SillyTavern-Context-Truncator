@@ -616,6 +616,7 @@ function refresh_memory() {
 
 // Global variable to store context size from intercept
 let CURRENT_CONTEXT_SIZE = 0;
+let LAST_ACTUAL_PROMPT_SIZE = 0;
 
 // Message interception hook (called by SillyTavern before generation)
 globalThis.truncator_intercept_messages = function (chat, contextSize, abort, type) {
@@ -659,6 +660,54 @@ globalThis.truncator_intercept_messages = function (chat, contextSize, abort, ty
     
     debug(`Applied IGNORE_SYMBOL: ${kept_count} kept, ${excluded_count} excluded`);
 };
+
+// Update status display after generation
+function update_status_display() {
+    const $display = $('#ct_status_display');
+    const $text = $('#ct_status_text');
+    
+    // Get the last prompt size
+    const last_raw_prompt = get_last_prompt_raw();
+    if (!last_raw_prompt) {
+        $display.hide();
+        return;
+    }
+    
+    const actualSize = count_tokens(last_raw_prompt);
+    const targetSize = get_settings('target_context_size');
+    const difference = actualSize - targetSize;
+    const percentError = Math.abs((difference / targetSize) * 100);
+    
+    // Determine color based on error percentage
+    let bgColor, textColor;
+    if (percentError <= 5) {
+        bgColor = '#2d5016'; // dark green
+        textColor = '#90ee90'; // light green
+    } else if (percentError <= 20) {
+        bgColor = '#4a4a00'; // dark yellow
+        textColor = '#ffff99'; // light yellow
+    } else {
+        bgColor = '#4a0000'; // dark red
+        textColor = '#ffaaaa'; // light red
+    }
+    
+    $display.css({
+        'background-color': bgColor,
+        'color': textColor
+    });
+    
+    const statusText = `
+        <div>Actual: <b>${actualSize.toLocaleString()}</b> tokens</div>
+        <div>Target: <b>${targetSize.toLocaleString()}</b> tokens</div>
+        <div>Difference: <b>${difference > 0 ? '+' : ''}${difference.toLocaleString()}</b> tokens</div>
+        <div>Error: <b>${percentError.toFixed(1)}%</b></div>
+    `;
+    
+    $text.html(statusText);
+    $display.show();
+    
+    LAST_ACTUAL_PROMPT_SIZE = actualSize;
+}
 
 // Summarization functionality
 class SummaryQueue {
@@ -799,10 +848,12 @@ function register_event_listeners() {
     eventSource.on(event_types.CHARACTER_MESSAGE_RENDERED, async (id) => {
         if (streamingProcessor && !streamingProcessor.isFinished) return;
         await auto_summarize_chat();
+        update_status_display();
     });
-    
+
     eventSource.on(event_types.USER_MESSAGE_RENDERED, async (id) => {
         await auto_summarize_chat();
+        update_status_display();
     });
 }
 

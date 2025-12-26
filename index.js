@@ -791,12 +791,21 @@ globalThis.truncator_intercept_messages = function (chat, contextSize, abort, ty
     let kept_count = 0;
     let excluded_count = 0;
     for (let i = start; i >= 0; i--) {
-        delete chat[i].extra.ignore_formatting;
+        // Ensure extra exists before trying to delete properties
+        if (chat[i].extra) {
+            delete chat[i].extra.ignore_formatting;
+        }
         
         let message = chat[i];
         let lagging = get_data(message, 'lagging');
         
         chat[i] = structuredClone(chat[i]);
+        
+        // Ensure extra exists after cloning
+        if (!chat[i].extra) {
+            chat[i].extra = {};
+        }
+        
         chat[i].extra[IGNORE_SYMBOL] = lagging;
         
         if (lagging) {

@@ -24,7 +24,7 @@
                     <span>Target Context Size (tokens)</span>
                 </label>
                 <input id="ct_target_size" class="text_pole" type="number" min="1000" max="200000" step="1000" />
-                <small>Target maximum context size in tokens. When exceeded, older messages will be truncated and summarized.</small>
+                <small>Target prompt size in tokens. The extension learns and adapts over 2-3 generations to reach this target. Typical accuracy: 10-15% (conservative, under target).</small>
             </div>
 
             <div class="flex-container flexFlowColumn">
@@ -81,7 +81,7 @@
                     <i class="fa-solid fa-rotate-left"></i>
                     <span>Reset Truncation</span>
                 </button>
-                <small>Reset truncation index and recalculate on next generation</small>
+                <small>Reset truncation index and restart adaptive learning. Use this if you change target size or want to recalculate from scratch.</small>
             </div>
 
             <hr>
@@ -101,11 +101,14 @@
             <div class="flex-container flexFlowColumn">
                 <small>
                     <b>How it works:</b><br>
-                    1. Extension monitors prompt size after each generation<br>
+                    1. Monitors prompt size after each generation<br>
                     2. When size exceeds target, older messages are marked for truncation<br>
                     3. Truncated messages are automatically summarized (if enabled)<br>
                     4. Summaries are injected into the prompt as a compact list<br>
                     5. Truncation happens in batches for cache efficiency<br>
+                    6. System learns from each generation to improve accuracy<br>
+                    <br>
+                    <b>Adaptive Learning:</b> First generation may be ~20% off target as the system learns. Accuracy improves to ~10-15% over 2-3 generations.<br>
                     <br>
                     <b>Note:</b> Summaries are generated using your current AI model. The first truncation may take a moment while summaries are generated.
                 </small>

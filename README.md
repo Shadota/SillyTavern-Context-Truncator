@@ -17,8 +17,9 @@ When using LLMs with caching (like Claude), removing messages one-by-one invalid
 3. **Summarizes** older messages using AI (optional but recommended)
 4. **Removes** N messages at once (batch truncation) from active context
 5. **Injects** summaries as extension prompts to maintain narrative continuity
-6. **Preserves** a minimum number of recent messages for safety
-7. **Tracks** actual prompt size and displays accuracy metrics
+6. **Learns** from each generation to improve accuracy over time
+7. **Preserves** a minimum number of recent messages for safety
+8. **Displays** real-time accuracy metrics with color-coded feedback
 
 ## Installation
 
@@ -69,42 +70,66 @@ After each generation, the extension displays:
 ## Example Scenario
 
 **Setup:**
-- Target context: 42000 tokens
+- Target context: 45000 tokens
 - Batch size: 20 messages
 - Min keep: 10 messages
 - Summarization: Enabled
-- Chat has 100 messages
+- Chat has 400+ messages
 
 **Execution:**
-1. **Generation 1**: Context = 38000 tokens → No action needed
-2. **Generation 2**: Context = 43500 tokens → Exceeds target
-   - Remove messages 0-19 (batch 1) from active context
-   - Generate AI summary of removed messages
-   - Inject summary as extension prompt
-3. **Generation 3**: Context = 42318 tokens → Within target (1.7% error) 🟢
-4. **Generation 4**: Context = 42771 tokens → Within target (1.8% error) 🟢
-5. **Generation 5+**: Context stays near 42000 → **Cache preserved!**
+1. **Generation 1** (Initial Learning):
+   - Actual: 35932 tokens
+   - Target: 45000 tokens
+   - Error: 20.2% (under target) 🔴
+   - System learns correction factor: 0.898
+
+2. **Generation 2** (Adapting):
+   - Actual: 37730 tokens
+   - Target: 45000 tokens
+   - Error: 16.2% (under target) 🟡
+   - System refines correction factor: 0.826
+
+3. **Generation 3** (Converging):
+   - Actual: 39381 tokens
+   - Target: 45000 tokens
+   - Error: 12.5% (under target) 🟡
+   - Correction factor stabilizes
+
+4. **Generation 4+** (Stable):
+   - Actual: 39771 tokens
+   - Target: 45000 tokens
+   - Error: 11.6% (under target) 🟡
+   - **Cache preserved!** ✓
 
 **Status Display Example:**
 ```
 Last Generation:
-Actual: 42,318 tokens
-Target: 42,000 tokens
-Difference: +318 tokens
-Error: 0.8%
+Actual: 39,771 tokens
+Target: 45,000 tokens
+Difference: -5,229 tokens
+Error: 11.6%
 ```
-(Displayed in green background)
+(Displayed in yellow background)
 
-## Benefits
+**Note:** The extension learns and improves accuracy over 2-3 generations. First generation uses estimates and may be less accurate.
 
+## Key Features
+
+- **Adaptive Learning**: Learns from each generation to improve accuracy over time
 - **Narrative Continuity**: AI summaries preserve story context even after truncation
 - **Cache Efficiency**: 20x fewer cache invalidations (removing 20 at once vs 1 at a time)
-- **Accurate Targeting**: Typically within 5% of target size for primary use cases
 - **Predictable Behavior**: Always removes fixed batches, not variable amounts
+- **Real-time Feedback**: Color-coded status display shows actual vs target with accuracy metrics
 - **Safety**: Minimum message setting prevents over-truncation
-- **Transparency**: Color-coded status display shows actual vs target with accuracy metrics
 - **Automatic**: Works seamlessly in the background
 - **Flexible**: Can be used with or without summarization
+
+## Performance
+
+- **First Generation**: ~20% error (learning phase)
+- **Second Generation**: ~15% error (adapting)
+- **Third+ Generations**: ~10-12% error (stable)
+- **Cache Preservation**: Maintained after convergence
 
 ## Requirements
 
@@ -130,10 +155,11 @@ Error: 0.8%
 - Check that the extension is enabled
 
 ### Accuracy issues (high error percentage)
-- The extension is most accurate around 42000 tokens (primary use case)
-- Lower or higher targets may have larger variance
+- **First generation is always less accurate** (~20% error) as the system learns
+- **Accuracy improves over 2-3 generations** as the adaptive system converges
+- **Typical stable accuracy**: 10-15% error (conservative, under target)
 - Batch size affects accuracy - smaller batches = more precise but more cache invalidations
-- First generation after reset uses a 15% estimate and may be less accurate
+- Click "Reset Truncation" to restart the learning process if needed
 
 ### Summarization not working
 - Verify **Enable Summarization** is checked

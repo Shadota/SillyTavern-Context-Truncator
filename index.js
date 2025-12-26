@@ -377,8 +377,8 @@ function calculate_truncation_index() {
         nonChatBudget = SAVED_NON_CHAT_BUDGET;
         debug(`  Using saved non-chat budget: ${nonChatBudget}`);
     } else if (last_raw_prompt) {
-        // Calculate from raw prompt and save it
-        let totalPromptTokens = count_tokens(last_raw_prompt);
+        // Calculate from CURRENT prompt size (which may be truncated) and its chat tokens
+        // The key: we need to use currentPromptSize (full context) not the raw prompt size
         let promptChatTokens = 0;
         
         let segments = get_prompt_chat_segments_from_raw(last_raw_prompt);
@@ -386,10 +386,11 @@ function calculate_truncation_index() {
             promptChatTokens = segments.reduce((sum, seg) => sum + seg.tokenCount, 0);
         }
         
-        nonChatBudget = Math.max(totalPromptTokens - promptChatTokens, 0);
-        debug(`  Total prompt tokens: ${totalPromptTokens}`);
+        // Use currentPromptSize as the total, since that's the FULL context before our truncation
+        nonChatBudget = Math.max(currentPromptSize - promptChatTokens, 0);
+        debug(`  Current prompt size: ${currentPromptSize}`);
         debug(`  Prompt chat tokens: ${promptChatTokens}`);
-        debug(`  Calculated non-chat budget from raw prompt: ${nonChatBudget}`);
+        debug(`  Calculated non-chat budget: ${nonChatBudget}`);
     } else {
         // No saved value and no raw prompt - this shouldn't happen after the first generation
         error('No saved non-chat budget and no raw prompt available');

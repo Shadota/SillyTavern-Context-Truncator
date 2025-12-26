@@ -216,3 +216,179 @@
 .ct_connection_indicator.unknown {
     background: #9e9e9e;
 }
+
+/* ==================== CALIBRATION PANEL ==================== */
+.ct_calibration_panel {
+    background: var(--black30a);
+    border: 1px solid var(--SmartThemeBorderColor);
+    border-radius: 8px;
+    margin-top: 10px;
+    overflow: hidden;
+}
+
+.ct_calibration_header {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 10px 12px;
+    background: var(--black50a);
+    font-weight: bold;
+    font-size: 0.9em;
+}
+
+.ct_calibration_header i {
+    color: #90caf9;
+}
+
+.ct_calibration_content {
+    padding: 10px 12px;
+}
+
+.ct_calibration_row {
+    display: flex;
+    justify-content: space-between;
+    padding: 4px 0;
+    border-bottom: 1px solid var(--SmartThemeBorderColor);
+}
+
+.ct_calibration_row:last-child {
+    border-bottom: none;
+}
+
+.ct_calibration_label {
+    opacity: 0.8;
+    font-size: 0.9em;
+}
+
+.ct_calibration_value {
+    font-weight: bold;
+    font-size: 0.9em;
+}
+
+/* Calibration phase colors */
+.ct_phase_training {
+    color: #ffcc00;
+}
+
+.ct_phase_calibrating {
+    color: #ff9800;
+}
+
+.ct_phase_retraining {
+    color: #2196f3;
+}
+
+.ct_phase_stable {
+    color: #4caf50;
+}
+
+/* ==================== MEMORY DISPLAY PANEL ==================== */
+.ct_memory_panel {
+    background: var(--black30a);
+    border: 1px solid var(--SmartThemeBorderColor);
+    border-radius: 8px;
+    overflow: hidden;
+}
+
+.ct_memory_panel_header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 10px 12px;
+    background: var(--black50a);
+    cursor: pointer;
+    transition: background 0.2s ease;
+}
+
+.ct_memory_panel_header:hover {
+    background: var(--black70a);
+}
+
+.ct_memory_panel_header i:first-child {
+    color: #ce93d8;
+    margin-right: 8px;
+}
+
+.ct_memory_toggle_icon {
+    transition: transform 0.2s ease;
+    opacity: 0.6;
+}
+
+.ct_memory_panel_header.expanded .ct_memory_toggle_icon {
+    transform: rotate(180deg);
+}
+
+.ct_memory_panel_content {
+    max-height: 400px;
+    overflow-y: auto;
+}
+
+.ct_memory_empty {
+    padding: 15px;
+    text-align: center;
+    opacity: 0.6;
+    font-style: italic;
+}
+
+.ct_memory_item {
+    padding: 10px 12px;
+    border-bottom: 1px solid var(--SmartThemeBorderColor);
+    transition: background 0.2s ease;
+}
+
+.ct_memory_item:last-child {
+    border-bottom: none;
+}
+
+.ct_memory_item:hover {
+    background: var(--black50a);
+}
+
+.ct_memory_item_header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 6px;
+}
+
+.ct_memory_score {
+    font-size: 0.85em;
+    font-weight: bold;
+    padding: 2px 8px;
+    border-radius: 10px;
+    background: var(--black50a);
+}
+
+/* Score color coding */
+.ct_score_high {
+    background: rgba(76, 175, 80, 0.3) !important;
+    color: #90ee90;
+}
+
+.ct_score_medium {
+    background: rgba(255, 193, 7, 0.3) !important;
+    color: #ffff99;
+}
+
+.ct_score_low {
+    background: rgba(158, 158, 158, 0.3) !important;
+    color: #cccccc;
+}
+
+.ct_memory_meta {
+    font-size: 0.8em;
+    opacity: 0.7;
+}
+
+.ct_memory_text {
+    font-size: 0.9em;
+    line-height: 1.4;
+    white-space: pre-wrap;
+    word-break: break-word;
+    max-height: 100px;
+    overflow-y: auto;
+    padding: 8px;
+    background: var(--black30a);
+    border-radius: 4px;
+    margin-top: 6px;
+}

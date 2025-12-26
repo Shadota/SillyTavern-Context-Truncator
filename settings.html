@@ -99,6 +99,69 @@
 
                 <hr>
 
+                <!-- Auto-Calibration Settings -->
+                <h4>Auto-Target Calibration</h4>
+                
+                <div class="flex-container flexFlowColumn">
+                    <label class="checkbox_label" for="ct_auto_calibrate">
+                        <input id="ct_auto_calibrate" type="checkbox" />
+                        <span>Enable Auto-Calibration</span>
+                    </label>
+                    <small>Automatically find optimal target_context_size based on your max context. Trains over several generations.</small>
+                </div>
+
+                <div class="flex-container flexFlowColumn">
+                    <label for="ct_target_utilization">
+                        <span>Target Utilization: <span id="ct_target_utilization_display">80%</span></span>
+                    </label>
+                    <input id="ct_target_utilization" class="text_pole" type="range" min="0.5" max="0.95" step="0.05" value="0.80" />
+                    <small>How much of max context to use (80% recommended for safety margin)</small>
+                </div>
+
+                <div class="flex-container flexFlowColumn">
+                    <label for="ct_calibration_tolerance">
+                        <span>Tolerance: <span id="ct_calibration_tolerance_display">5%</span></span>
+                    </label>
+                    <input id="ct_calibration_tolerance" class="text_pole" type="range" min="0.02" max="0.15" step="0.01" value="0.05" />
+                    <small>Acceptable deviation from target utilization before re-calibrating</small>
+                </div>
+
+                <!-- Calibration Status Panel -->
+                <div id="ct_calibration_status" class="ct_calibration_panel" style="display: none;">
+                    <div class="ct_calibration_header">
+                        <i class="fa-solid fa-chart-line"></i>
+                        <span>Calibration Status</span>
+                    </div>
+                    <div class="ct_calibration_content">
+                        <div class="ct_calibration_row">
+                            <span class="ct_calibration_label">Phase:</span>
+                            <span id="ct_calibration_phase" class="ct_calibration_value">-</span>
+                        </div>
+                        <div class="ct_calibration_row">
+                            <span class="ct_calibration_label">Progress:</span>
+                            <span id="ct_calibration_progress" class="ct_calibration_value">-</span>
+                        </div>
+                        <div class="ct_calibration_row">
+                            <span class="ct_calibration_label">Current Target:</span>
+                            <span id="ct_calibration_target" class="ct_calibration_value">-</span>
+                        </div>
+                        <div class="ct_calibration_row">
+                            <span class="ct_calibration_label">Last Utilization:</span>
+                            <span id="ct_calibration_utilization" class="ct_calibration_value">-</span>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="flex-container flexFlowColumn" style="margin-top: 10px;">
+                    <button id="ct_recalibrate" class="menu_button">
+                        <i class="fa-solid fa-sync"></i>
+                        <span>Recalibrate</span>
+                    </button>
+                    <small>Reset calibration and start training from scratch</small>
+                </div>
+
+                <hr>
+
                 <!-- Status and Controls -->
                 <h4>Status and Controls</h4>
                 
@@ -307,6 +370,25 @@
                         <span>Delete Collection</span>
                     </button>
                     <small>Delete all memories for current character/chat</small>
+                </div>
+
+                <hr>
+
+                <!-- Retrieved Memories Display -->
+                <h4>Retrieved Memories (Last Generation)</h4>
+                
+                <div id="ct_memory_display_panel" class="ct_memory_panel">
+                    <div class="ct_memory_panel_header" id="ct_memory_panel_toggle">
+                        <span>
+                            <i class="fa-solid fa-brain"></i>
+                            <span id="ct_memory_count">No memories retrieved</span>
+                        </span>
+                        <i class="fa-solid fa-chevron-down ct_memory_toggle_icon"></i>
+                    </div>
+                    <div class="ct_memory_panel_content" id="ct_memory_list" style="display: none;">
+                        <!-- Memories will be populated here by JavaScript -->
+                        <div class="ct_memory_empty">Generate a message to retrieve memories</div>
+                    </div>
                 </div>
 
             </div>

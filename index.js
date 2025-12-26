@@ -41,6 +41,11 @@ const default_settings = {
     batch_size: 20,                 // Messages per batch
     min_messages_to_keep: 10,       // Safety limit
     
+    // Auto-calibration settings
+    auto_calibrate_target: false,   // Enable auto-calibration
+    target_utilization: 0.80,       // Target 80% of max context
+    calibration_tolerance: 0.05,    // 5% tolerance before recalibrating
+    
     // Summarization settings
     auto_summarize: true,
     connection_profile: "",         // Connection profile for summarization (empty = same as current)
@@ -153,6 +158,15 @@ If something is not stated here or in recent chat, do not invent details. If sum
 
 // Global state
 let TRUNCATION_INDEX = null;  // Current truncation position
+
+// Calibration state machine
+// States: INITIAL_TRAINING -> CALIBRATING -> RETRAINING -> STABLE
+let CALIBRATION_STATE = 'INITIAL_TRAINING';
+let GENERATION_COUNT = 0;      // Generations in current phase
+let STABLE_COUNT = 0;          // Consecutive stable generations
+let RETRAIN_COUNT = 0;         // Generations in retraining phase
+const TRAINING_GENERATIONS = 3;  // Generations needed to train correction factor
+const STABLE_THRESHOLD = 5;      // Consecutive stable gens to reach STABLE state
 
 // Utility functions
 function log(...args) {
@@ -948,6 +962,256 @@ function update_status_display() {
     debug(`  Display shown, visibility: ${$display.css('display')}`);
     
     LAST_ACTUAL_PROMPT_SIZE = actualSize;
+    
+    // Run auto-calibration if enabled
+    if (get_settings('auto_calibrate_target')) {
+        calibrate_target_size(actualSize);
+    }
+    
+    // Update memory display
+    update_memory_display();
+}
+
+// ==================== AUTO-CALIBRATION STATE MACHINE ====================
+
+// Reset calibration state
+function reset_calibration() {
+    CALIBRATION_STATE = 'INITIAL_TRAINING';
+    GENERATION_COUNT = 0;
+    STABLE_COUNT = 0;
+    RETRAIN_COUNT = 0;
+    CHAT_TOKEN_CORRECTION_FACTOR = 1.0;
+    
+    debug('Calibration reset to INITIAL_TRAINING');
+    update_calibration_ui();
+    
+    toastr.info('Calibration reset - starting fresh training', MODULE_NAME_FANCY);
+}
+
+// Auto-calibrate target context size based on actual usage
+function calibrate_target_size(actualSize) {
+    const maxContext = getMaxContextSize();
+    const targetUtilization = get_settings('target_utilization');
+    const tolerance = get_settings('calibration_tolerance');
+    const idealTarget = Math.floor(maxContext * targetUtilization);
+    
+    // Calculate current utilization
+    const currentUtilization = actualSize / maxContext;
+    const deviation = Math.abs(currentUtilization - targetUtilization);
+    
+    debug(`=== CALIBRATION STATE MACHINE ===`);
+    debug(`  State: ${CALIBRATION_STATE}`);
+    debug(`  Max Context: ${maxContext}`);
+    debug(`  Actual Size: ${actualSize}`);
+    debug(`  Current Utilization: ${(currentUtilization * 100).toFixed(1)}%`);
+    debug(`  Target Utilization: ${(targetUtilization * 100).toFixed(1)}%`);
+    debug(`  Deviation: ${(deviation * 100).toFixed(1)}%`);
+    debug(`  Tolerance: ${(tolerance * 100).toFixed(1)}%`);
+    
+    switch (CALIBRATION_STATE) {
+        case 'INITIAL_TRAINING':
+            // Wait for correction factor to stabilize
+            GENERATION_COUNT++;
+            debug(`  Training generation ${GENERATION_COUNT}/${TRAINING_GENERATIONS}`);
+            
+            if (GENERATION_COUNT >= TRAINING_GENERATIONS) {
+                CALIBRATION_STATE = 'CALIBRATING';
+                GENERATION_COUNT = 0;
+                debug(`  Transitioning to CALIBRATING`);
+                
+                // Calculate initial target based on learned correction factor
+                calculate_calibrated_target(maxContext, targetUtilization);
+            }
+            break;
+            
+        case 'CALIBRATING':
+            // Apply calibration and check if we're within tolerance
+            if (deviation <= tolerance) {
+                STABLE_COUNT++;
+                debug(`  Within tolerance, stable count: ${STABLE_COUNT}/${STABLE_THRESHOLD}`);
+                
+                if (STABLE_COUNT >= STABLE_THRESHOLD) {
+                    CALIBRATION_STATE = 'STABLE';
+                    debug(`  Transitioning to STABLE`);
+                    toastr.success(`Calibration complete! Target: ${get_settings('target_context_size').toLocaleString()} tokens`, MODULE_NAME_FANCY);
+                }
+            } else {
+                STABLE_COUNT = 0;
+                debug(`  Outside tolerance, recalculating...`);
+                
+                // Recalculate target
+                calculate_calibrated_target(maxContext, targetUtilization);
+            }
+            break;
+            
+        case 'RETRAINING':
+            // Similar to initial training but after destabilization
+            RETRAIN_COUNT++;
+            debug(`  Retraining generation ${RETRAIN_COUNT}/${TRAINING_GENERATIONS}`);
+            
+            if (RETRAIN_COUNT >= TRAINING_GENERATIONS) {
+                CALIBRATION_STATE = 'CALIBRATING';
+                RETRAIN_COUNT = 0;
+                STABLE_COUNT = 0;
+                debug(`  Transitioning back to CALIBRATING`);
+                
+                calculate_calibrated_target(maxContext, targetUtilization);
+            }
+            break;
+            
+        case 'STABLE':
+            // Monitor for destabilization
+            if (deviation > tolerance * 1.5) {  // Use 1.5x tolerance to avoid bouncing
+                debug(`  Destabilized! Deviation ${(deviation * 100).toFixed(1)}% > ${(tolerance * 1.5 * 100).toFixed(1)}%`);
+                CALIBRATION_STATE = 'RETRAINING';
+                RETRAIN_COUNT = 0;
+                STABLE_COUNT = 0;
+                toastr.warning('Calibration destabilized - retraining...', MODULE_NAME_FANCY);
+            }
+            break;
+    }
+    
+    update_calibration_ui();
+}
+
+// Calculate and set calibrated target
+function calculate_calibrated_target(maxContext, targetUtilization) {
+    // Use correction factor to estimate how much to adjust
+    // If correction factor > 1, we're underestimating (need higher target)
+    // If correction factor < 1, we're overestimating (need lower target)
+    
+    const idealTarget = Math.floor(maxContext * targetUtilization);
+    const adjustedTarget = Math.floor(idealTarget / CHAT_TOKEN_CORRECTION_FACTOR);
+    
+    // Clamp to reasonable bounds
+    const minTarget = Math.floor(maxContext * 0.3);  // At least 30% of max
+    const maxTarget = Math.floor(maxContext * 0.95); // At most 95% of max
+    const finalTarget = Math.max(minTarget, Math.min(maxTarget, adjustedTarget));
+    
+    debug(`  Calculating calibrated target:`);
+    debug(`    Ideal target: ${idealTarget}`);
+    debug(`    Correction factor: ${CHAT_TOKEN_CORRECTION_FACTOR.toFixed(3)}`);
+    debug(`    Adjusted target: ${adjustedTarget}`);
+    debug(`    Final target: ${finalTarget}`);
+    
+    // Only update if significantly different (>2% change)
+    const currentTarget = get_settings('target_context_size');
+    const changePct = Math.abs(finalTarget - currentTarget) / currentTarget;
+    
+    if (changePct > 0.02) {
+        set_settings('target_context_size', finalTarget);
+        $('#ct_target_size').val(finalTarget);
+        
+        // Reset truncation index since target changed
+        reset_truncation_index();
+        
+        debug(`  Updated target from ${currentTarget} to ${finalTarget}`);
+    } else {
+        debug(`  Target change too small (${(changePct * 100).toFixed(1)}%), keeping ${currentTarget}`);
+    }
+}
+
+// Update calibration UI
+function update_calibration_ui() {
+    const $panel = $('#ct_calibration_status');
+    const $phase = $('#ct_calibration_phase');
+    const $progress = $('#ct_calibration_progress');
+    const $target = $('#ct_calibration_target');
+    const $utilization = $('#ct_calibration_utilization');
+    
+    if (!get_settings('auto_calibrate_target')) {
+        $panel.hide();
+        return;
+    }
+    
+    $panel.show();
+    
+    // Update phase with color coding
+    $phase.removeClass('ct_phase_training ct_phase_calibrating ct_phase_retraining ct_phase_stable');
+    
+    switch (CALIBRATION_STATE) {
+        case 'INITIAL_TRAINING':
+            $phase.text('Initial Training').addClass('ct_phase_training');
+            $progress.text(`${GENERATION_COUNT}/${TRAINING_GENERATIONS} generations`);
+            break;
+        case 'CALIBRATING':
+            $phase.text('Calibrating').addClass('ct_phase_calibrating');
+            $progress.text(`${STABLE_COUNT}/${STABLE_THRESHOLD} stable`);
+            break;
+        case 'RETRAINING':
+            $phase.text('Retraining').addClass('ct_phase_retraining');
+            $progress.text(`${RETRAIN_COUNT}/${TRAINING_GENERATIONS} generations`);
+            break;
+        case 'STABLE':
+            $phase.text('Stable ✓').addClass('ct_phase_stable');
+            $progress.text('Monitoring');
+            break;
+    }
+    
+    // Update target and utilization
+    $target.text(`${get_settings('target_context_size').toLocaleString()} tokens`);
+    
+    if (LAST_ACTUAL_PROMPT_SIZE > 0) {
+        const maxContext = getMaxContextSize();
+        const utilization = (LAST_ACTUAL_PROMPT_SIZE / maxContext * 100).toFixed(1);
+        $utilization.text(`${utilization}%`);
+    } else {
+        $utilization.text('-');
+    }
+}
+
+// ==================== MEMORY DISPLAY ====================
+
+// Update the memory display panel with current retrieved memories
+function update_memory_display() {
+    const $count = $('#ct_memory_count');
+    const $list = $('#ct_memory_list');
+    
+    if (!get_settings('qdrant_enabled') || CURRENT_QDRANT_MEMORIES.length === 0) {
+        $count.text('No memories retrieved');
+        $list.html('<div class="ct_memory_empty">Generate a message to retrieve memories</div>');
+        return;
+    }
+    
+    const memories = CURRENT_QDRANT_MEMORIES;
+    $count.text(`${memories.length} memor${memories.length === 1 ? 'y' : 'ies'} retrieved`);
+    
+    // Build memory list HTML
+    let html = '';
+    for (let i = 0; i < memories.length; i++) {
+        const memory = memories[i];
+        const score = memory.score;
+        const scorePercent = (score * 100).toFixed(1);
+        
+        // Determine score class
+        let scoreClass = 'ct_score_low';
+        if (score >= 0.7) scoreClass = 'ct_score_high';
+        else if (score >= 0.5) scoreClass = 'ct_score_medium';
+        
+        // Format text (truncate if needed)
+        const text = memory.text.length > 500
+            ? memory.text.substring(0, 500) + '...'
+            : memory.text;
+        
+        html += `
+            <div class="ct_memory_item">
+                <div class="ct_memory_item_header">
+                    <span class="ct_memory_meta">Memory ${i + 1} • Messages ${memory.firstIndex}-${memory.lastIndex}</span>
+                    <span class="ct_memory_score ${scoreClass}">${scorePercent}%</span>
+                </div>
+                <div class="ct_memory_text">${escapeHtml(text)}</div>
+            </div>
+        `;
+    }
+    
+    $list.html(html);
+}
+
+// Helper function to escape HTML
+function escapeHtml(text) {
+    const div = document.createElement('div');
+    div.textContent = text;
+    return div.innerHTML;
 }
 
 // Summarization functionality
@@ -1229,6 +1493,34 @@ function initialize_ui_listeners() {
         }
     });
     
+    // ==================== AUTO-CALIBRATION SETTINGS ====================
+    
+    // Auto-calibrate toggle
+    $('#ct_auto_calibrate').prop('checked', get_settings('auto_calibrate_target'));
+    $('#ct_auto_calibrate').on('change', function() {
+        const value = $(this).prop('checked');
+        set_settings('auto_calibrate_target', value);
+        update_calibration_ui();
+        
+        if (value) {
+            toastr.info('Auto-calibration enabled - will start training on next generation', MODULE_NAME_FANCY);
+        }
+    });
+    
+    // Target utilization slider
+    bind_range_setting_percent('#ct_target_utilization', 'target_utilization', '#ct_target_utilization_display');
+    
+    // Calibration tolerance slider
+    bind_range_setting_percent('#ct_calibration_tolerance', 'calibration_tolerance', '#ct_calibration_tolerance_display');
+    
+    // Recalibrate button
+    $('#ct_recalibrate').on('click', () => {
+        reset_calibration();
+    });
+    
+    // Initialize calibration UI state
+    update_calibration_ui();
+    
     // ==================== QDRANT SETTINGS ====================
     bind_setting('#ct_qdrant_enabled', 'qdrant_enabled', 'boolean');
     bind_setting('#ct_qdrant_url', 'qdrant_url', 'text');
@@ -1254,6 +1546,9 @@ function initialize_ui_listeners() {
     $('#ct_test_embedding').on('click', test_embedding);
     $('#ct_index_chats').on('click', index_current_chat);
     $('#ct_delete_collection').on('click', delete_current_collection);
+    
+    // Memory panel toggle
+    initialize_memory_panel_toggle();
     
     // ==================== SYNERGY SETTINGS ====================
     bind_setting('#ct_use_summaries_for_qdrant', 'use_summaries_for_qdrant', 'boolean');
@@ -1310,6 +1605,52 @@ function bind_range_setting(selector, key, displaySelector, isFloat = false) {
         const value = isFloat ? parseFloat($(this).val()) : parseInt($(this).val());
         debug(`Setting [${key}] changed to [${value}]`);
         set_settings(key, value);
+    });
+}
+
+// Bind range input with percentage display (for calibration settings)
+function bind_range_setting_percent(selector, key, displaySelector) {
+    const $element = $(selector);
+    const $display = $(displaySelector);
+    
+    if ($element.length === 0) {
+        error(`No element found for selector [${selector}]`);
+        return;
+    }
+    
+    // Set initial value
+    const initialValue = get_settings(key);
+    $element.val(initialValue);
+    $display.text(`${Math.round(initialValue * 100)}%`);
+    
+    // Listen for input (live update) and change (final value)
+    $element.on('input', function() {
+        const value = parseFloat($(this).val());
+        $display.text(`${Math.round(value * 100)}%`);
+    });
+    
+    $element.on('change', function() {
+        const value = parseFloat($(this).val());
+        debug(`Setting [${key}] changed to [${value}]`);
+        set_settings(key, value);
+    });
+}
+
+// Initialize memory panel toggle
+function initialize_memory_panel_toggle() {
+    const $header = $('#ct_memory_panel_toggle');
+    const $content = $('#ct_memory_list');
+    
+    $header.on('click', function() {
+        const isExpanded = $content.is(':visible');
+        
+        if (isExpanded) {
+            $content.slideUp(200);
+            $header.removeClass('expanded');
+        } else {
+            $content.slideDown(200);
+            $header.addClass('expanded');
+        }
     });
 }
 

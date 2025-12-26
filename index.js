@@ -1706,10 +1706,14 @@ async function process_and_store_chunk(chunk) {
     }
 }
 
-// Generate a unique point ID
+// Generate a unique point ID (must be UUID format for Qdrant)
 function generate_point_id() {
-    // Use timestamp + random for uniqueness
-    return `${Date.now()}_${Math.random().toString(36).substring(2, 9)}`;
+    // Generate a valid UUID v4
+    return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function(c) {
+        const r = Math.random() * 16 | 0;
+        const v = c === 'x' ? r : (r & 0x3 | 0x8);
+        return v.toString(16);
+    });
 }
 
 // ==================== QDRANT STORAGE FUNCTIONS ====================

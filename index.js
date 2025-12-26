@@ -261,8 +261,6 @@ function get_prompt_message_tokens_from_raw(raw_prompt, chat) {
 }
 
 // Truncation index management
-let SAVED_NON_CHAT_BUDGET = null;
-
 function load_truncation_index() {
     debug(`Loading truncation index from metadata`);
     if (chat_metadata?.[MODULE_NAME]?.truncation_index !== undefined) {
@@ -271,28 +269,14 @@ function load_truncation_index() {
     } else {
         debug(`No truncation index found`);
     }
-    
-    // Load saved non-chat budget
-    if (chat_metadata?.[MODULE_NAME]?.non_chat_budget !== undefined) {
-        SAVED_NON_CHAT_BUDGET = chat_metadata[MODULE_NAME].non_chat_budget;
-        debug(`Loaded non-chat budget: ${SAVED_NON_CHAT_BUDGET}`);
-    }
 }
 
-function save_truncation_index(nonChatBudget = null) {
+function save_truncation_index() {
     if (!chat_metadata[MODULE_NAME]) {
         chat_metadata[MODULE_NAME] = {};
     }
     chat_metadata[MODULE_NAME].truncation_index = TRUNCATION_INDEX;
     chat_metadata[MODULE_NAME].target_size = get_settings('target_context_size');
-    
-    // Save non-chat budget if provided
-    if (nonChatBudget !== null) {
-        chat_metadata[MODULE_NAME].non_chat_budget = nonChatBudget;
-        SAVED_NON_CHAT_BUDGET = nonChatBudget;
-        debug(`Saved non-chat budget: ${nonChatBudget}`);
-    }
-    
     debug(`Saved truncation index: ${TRUNCATION_INDEX}`);
     saveMetadataDebounced();
 }
@@ -300,13 +284,7 @@ function save_truncation_index(nonChatBudget = null) {
 function reset_truncation_index() {
     debug('Resetting truncation index');
     TRUNCATION_INDEX = null;
-    SAVED_NON_CHAT_BUDGET = null;
-    if (!chat_metadata[MODULE_NAME]) {
-        chat_metadata[MODULE_NAME] = {};
-    }
-    chat_metadata[MODULE_NAME].truncation_index = null;
-    chat_metadata[MODULE_NAME].non_chat_budget = null;
-    saveMetadataDebounced();
+    save_truncation_index();
 }
 
 function should_recalculate_truncation() {
@@ -369,34 +347,41 @@ function calculate_truncation_index() {
     let last_raw_prompt = get_last_prompt_raw();
     let message_token_map = get_prompt_message_tokens_from_raw(last_raw_prompt, chat);
     
-    // Calculate non-chat budget
-    // The key insight: both total and chat tokens must come from the SAME prompt for the calculation to be accurate
-    let nonChatBudget;
+    // Calculate non-chat budget from the current raw prompt
+    // Both total and chat tokens must come from the SAME prompt for accuracy
+    let totalPromptTokens = last_raw_prompt ? count_tokens(last_raw_prompt) : currentPromptSize;
+    let promptChatTokens = 0;
+    let promptChatTokensSource = 'raw_prompt';
     
-    if (SAVED_NON_CHAT_BUDGET !== null) {
-        // Use saved value
-        nonChatBudget = SAVED_NON_CHAT_BUDGET;
-        debug(`  Using saved non-chat budget: ${nonChatBudget}`);
-    } else if (last_raw_prompt) {
-        // Calculate from the raw prompt (both total and chat tokens from the SAME prompt)
-        let totalPromptTokens = count_tokens(last_raw_prompt);
-        let promptChatTokens = 0;
-        
+    if (last_raw_prompt) {
         let segments = get_prompt_chat_segments_from_raw(last_raw_prompt);
         if (segments && segments.length > 0) {
             promptChatTokens = segments.reduce((sum, seg) => sum + seg.tokenCount, 0);
         }
-        
-        nonChatBudget = Math.max(totalPromptTokens - promptChatTokens, 0);
-        debug(`  Total prompt tokens: ${totalPromptTokens}`);
-        debug(`  Prompt chat tokens: ${promptChatTokens}`);
-        debug(`  Calculated non-chat budget: ${nonChatBudget}`);
-    } else {
-        // No saved value and no raw prompt - this shouldn't happen after the first generation
-        error('No saved non-chat budget and no raw prompt available');
-        nonChatBudget = 0;
     }
     
+    // Fallback to itemizedPrompts if we couldn't get chat tokens from raw prompt
+    if (promptChatTokens === 0 && !last_raw_prompt) {
+        promptChatTokensSource = 'itemized_prompts';
+        for (let i = 0; i < itemizedPrompts.length; i++) {
+            let itemized_prompt = itemizedPrompts[i];
+            if (itemized_prompt?.mesId === undefined || itemized_prompt?.mesId === null) {
+                continue;
+            }
+            let token_count = itemized_prompt?.tokenCount;
+            if (token_count === undefined) {
+                let raw_prompt = itemized_prompt?.rawPrompt;
+                if (Array.isArray(raw_prompt)) raw_prompt = raw_prompt.map(x => x.content).join('\n');
+                token_count = count_tokens(raw_prompt ?? '');
+            }
+            promptChatTokens += token_count;
+        }
+    }
+    
+    const nonChatBudget = Math.max(totalPromptTokens - promptChatTokens, 0);
+    
+    debug(`  Total prompt tokens: ${totalPromptTokens}`);
+    debug(`  Prompt chat tokens: ${promptChatTokens} (source: ${promptChatTokensSource})`);
     debug(`  Non-chat budget: ${nonChatBudget}`);
     
     // Track token map usage
@@ -495,10 +480,7 @@ function calculate_truncation_index() {
     debug(`  Final total: ${estimateChatSize(finalIndex) + nonChatBudget}`);
     debug(`  Token map: ${map_hits} hits, ${map_misses} misses (${message_token_map ? message_token_map.size : 0} entries)`);
     
-    return {
-        index: finalIndex,
-        nonChatBudget: nonChatBudget
-    };
+    return finalIndex;
 }
 
 // Helper function to calculate separator size
@@ -543,9 +525,8 @@ function update_message_inclusion_flags() {
     
     // Calculate new truncation index if needed
     if (TRUNCATION_INDEX === null || TRUNCATION_INDEX === 0) {
-        const result = calculate_truncation_index();
-        TRUNCATION_INDEX = result.index;
-        save_truncation_index(result.nonChatBudget);
+        TRUNCATION_INDEX = calculate_truncation_index();
+        save_truncation_index();
     }
     
     debug(`Truncation index: ${TRUNCATION_INDEX}`);

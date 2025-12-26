@@ -349,26 +349,30 @@ function calculate_truncation_index() {
     
     // Calculate non-chat budget from the current raw prompt
     // Both total and chat tokens must come from the SAME prompt for accuracy
-    // If we don't have a raw prompt, we can't calculate accurately, so return 0 (no truncation)
-    if (!last_raw_prompt) {
-        debug(`  No raw prompt available - cannot calculate non-chat budget`);
-        debug(`  Skipping truncation calculation until first generation completes`);
-        return 0;
-    }
-    
-    let totalPromptTokens = count_tokens(last_raw_prompt);
+    let totalPromptTokens;
     let promptChatTokens = 0;
+    let nonChatBudget;
     
-    let segments = get_prompt_chat_segments_from_raw(last_raw_prompt);
-    if (segments && segments.length > 0) {
-        promptChatTokens = segments.reduce((sum, seg) => sum + seg.tokenCount, 0);
+    if (!last_raw_prompt) {
+        // No raw prompt - estimate non-chat budget as 15% of current prompt size
+        // This is a rough estimate for the first generation only
+        nonChatBudget = Math.floor(currentPromptSize * 0.15);
+        debug(`  No raw prompt available - using 15% estimate for non-chat budget: ${nonChatBudget}`);
+    } else {
+        // Have raw prompt - calculate accurately
+        totalPromptTokens = count_tokens(last_raw_prompt);
+        
+        let segments = get_prompt_chat_segments_from_raw(last_raw_prompt);
+        if (segments && segments.length > 0) {
+            promptChatTokens = segments.reduce((sum, seg) => sum + seg.tokenCount, 0);
+        }
+        
+        nonChatBudget = Math.max(totalPromptTokens - promptChatTokens, 0);
+        
+        debug(`  Total prompt tokens: ${totalPromptTokens}`);
+        debug(`  Prompt chat tokens: ${promptChatTokens}`);
+        debug(`  Non-chat budget: ${nonChatBudget}`);
     }
-    
-    const nonChatBudget = Math.max(totalPromptTokens - promptChatTokens, 0);
-    
-    debug(`  Total prompt tokens: ${totalPromptTokens}`);
-    debug(`  Prompt chat tokens: ${promptChatTokens}`);
-    debug(`  Non-chat budget: ${nonChatBudget}`);
     
     // Track token map usage
     let map_hits = 0;

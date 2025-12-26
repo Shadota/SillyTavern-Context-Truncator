@@ -793,8 +793,11 @@ function update_status_display() {
         <div>Error: <b>${percentError.toFixed(1)}%</b></div>
     `;
     
+    debug(`  Setting status text and showing display`);
+    debug(`  Status text: ${statusText.substring(0, 100)}...`);
     $text.html(statusText);
     $display.show();
+    debug(`  Display shown, visibility: ${$display.css('display')}`);
     
     LAST_ACTUAL_PROMPT_SIZE = actualSize;
 }

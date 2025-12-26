@@ -284,6 +284,7 @@ function save_truncation_index() {
 function reset_truncation_index() {
     debug('Resetting truncation index');
     TRUNCATION_INDEX = null;
+    CHAT_TOKEN_CORRECTION_FACTOR = 1.0;  // Reset correction factor
     save_truncation_index();
 }
 
@@ -408,8 +409,9 @@ function calculate_truncation_index() {
             // Messages at or after startIndex are kept in full
             const lagging = i < startIndex;
             if (!lagging) {
-                // Kept message - use full token count
-                total += estimateMessagePromptTokens(message, i);
+                // Kept message - use full token count with correction factor
+                const rawEstimate = estimateMessagePromptTokens(message, i);
+                total += Math.floor(rawEstimate * CHAT_TOKEN_CORRECTION_FACTOR);
                 continue;
             }
             
@@ -629,6 +631,9 @@ let LAST_PREDICTED_SIZE = 0;
 let LAST_PREDICTED_CHAT_SIZE = 0;
 let LAST_PREDICTED_NON_CHAT_SIZE = 0;
 
+// Adaptive correction factor (learned from previous generations)
+let CHAT_TOKEN_CORRECTION_FACTOR = 1.0;  // Multiplier for chat token estimates
+
 // Message interception hook (called by SillyTavern before generation)
 globalThis.truncator_intercept_messages = function (chat, contextSize, abort, type) {
     if (!get_settings('enabled')) return;
@@ -689,24 +694,34 @@ function update_status_display() {
     const difference = actualSize - targetSize;
     const percentError = Math.abs((difference / targetSize) * 100);
     
-    // Diagnostic logging: compare prediction with actual
-    if (get_settings('debug_mode') && LAST_PREDICTED_SIZE > 0) {
-        debug('=== PREDICTION vs ACTUAL ANALYSIS ===');
-        debug(`  PREDICTED total: ${LAST_PREDICTED_SIZE} tokens`);
-        debug(`  PREDICTED chat: ${LAST_PREDICTED_CHAT_SIZE} tokens`);
-        debug(`  PREDICTED non-chat: ${LAST_PREDICTED_NON_CHAT_SIZE} tokens`);
-        debug(`  ACTUAL total: ${actualSize} tokens`);
-        debug(`  DIFFERENCE: ${LAST_PREDICTED_SIZE - actualSize} tokens (${((LAST_PREDICTED_SIZE - actualSize) / LAST_PREDICTED_SIZE * 100).toFixed(1)}%)`);
-        
+    // Calculate and apply adaptive correction factor
+    if (LAST_PREDICTED_SIZE > 0 && LAST_PREDICTED_CHAT_SIZE > 0) {
         // Analyze actual chat vs non-chat from current prompt
         const segments = get_prompt_chat_segments_from_raw(last_raw_prompt);
         const actualChatTokens = segments ? segments.reduce((sum, seg) => sum + seg.tokenCount, 0) : 0;
         const actualNonChatTokens = actualSize - actualChatTokens;
         
-        debug(`  ACTUAL chat: ${actualChatTokens} tokens`);
-        debug(`  ACTUAL non-chat: ${actualNonChatTokens} tokens`);
-        debug(`  Chat difference: ${LAST_PREDICTED_CHAT_SIZE - actualChatTokens} tokens`);
-        debug(`  Non-chat difference: ${LAST_PREDICTED_NON_CHAT_SIZE - actualNonChatTokens} tokens`);
+        // Calculate correction factor: actual / predicted
+        const newCorrectionFactor = actualChatTokens / LAST_PREDICTED_CHAT_SIZE;
+        
+        // Smooth the correction factor (exponential moving average with alpha=0.3)
+        // This prevents wild swings from a single bad estimate
+        CHAT_TOKEN_CORRECTION_FACTOR = (0.3 * newCorrectionFactor) + (0.7 * CHAT_TOKEN_CORRECTION_FACTOR);
+        
+        if (get_settings('debug_mode')) {
+            debug('=== PREDICTION vs ACTUAL ANALYSIS ===');
+            debug(`  PREDICTED total: ${LAST_PREDICTED_SIZE} tokens`);
+            debug(`  PREDICTED chat: ${LAST_PREDICTED_CHAT_SIZE} tokens`);
+            debug(`  PREDICTED non-chat: ${LAST_PREDICTED_NON_CHAT_SIZE} tokens`);
+            debug(`  ACTUAL total: ${actualSize} tokens`);
+            debug(`  DIFFERENCE: ${LAST_PREDICTED_SIZE - actualSize} tokens (${((LAST_PREDICTED_SIZE - actualSize) / LAST_PREDICTED_SIZE * 100).toFixed(1)}%)`);
+            debug(`  ACTUAL chat: ${actualChatTokens} tokens`);
+            debug(`  ACTUAL non-chat: ${actualNonChatTokens} tokens`);
+            debug(`  Chat difference: ${LAST_PREDICTED_CHAT_SIZE - actualChatTokens} tokens`);
+            debug(`  Non-chat difference: ${LAST_PREDICTED_NON_CHAT_SIZE - actualNonChatTokens} tokens`);
+            debug(`  New correction factor: ${newCorrectionFactor.toFixed(3)}`);
+            debug(`  Smoothed correction factor: ${CHAT_TOKEN_CORRECTION_FACTOR.toFixed(3)}`);
+        }
     }
     
     // Diagnostic logging: analyze itemizedPrompts
@@ -889,6 +904,7 @@ function register_event_listeners() {
         if (currentChatId !== null && currentChatId !== newChatId) {
             debug('Chat switched, loading truncation index');
             TRUNCATION_INDEX = null;
+            CHAT_TOKEN_CORRECTION_FACTOR = 1.0;  // Reset correction factor for new chat
             load_truncation_index();
         }
         currentChatId = newChatId;

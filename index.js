@@ -952,25 +952,18 @@ class SummaryQueue {
         try {
             const profile_id = get_summary_connection_profile();
             
-            // Save current profile if switching
-            const current_profile = get_current_connection_profile();
-            const needs_switch = profile_id && profile_id !== current_profile && check_connection_profiles_active();
+            // Create messages array for the request
+            const messages = [{
+                role: 'system',
+                content: prompt
+            }];
             
-            if (needs_switch) {
-                debug(`Switching to profile ${profile_id} for summarization`);
-                await ctx.switchConnectionProfile(profile_id);
-            }
+            // Use ConnectionManagerRequestService to send with specific profile
+            debug(`Using profile ${profile_id} for summarization`);
+            const result = await ctx.ConnectionManagerRequestService.sendRequest(profile_id, messages);
             
-            const result = await ctx.generateRaw(prompt, '', false, false);
-            
-            // Switch back to original profile
-            if (needs_switch && current_profile) {
-                debug(`Switching back to profile ${current_profile}`);
-                await ctx.switchConnectionProfile(current_profile);
-            }
-            
-            if (result) {
-                let summary = result.trim();
+            if (result && result.content) {
+                let summary = result.content.trim();
                 
                 // Trim incomplete sentences if enabled
                 if (ctx.powerUserSettings.trim_sentences) {

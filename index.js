@@ -1043,16 +1043,16 @@ function register_event_listeners() {
         refresh_memory();
     });
     
-    // Auto-summarize on new messages
-    eventSource.on(event_types.CHARACTER_MESSAGE_RENDERED, async (id) => {
+    // Auto-summarize on new messages (don't await - let it run in background)
+    eventSource.on(event_types.CHARACTER_MESSAGE_RENDERED, (id) => {
         if (streamingProcessor && !streamingProcessor.isFinished) return;
-        await auto_summarize_chat();
+        auto_summarize_chat();  // Don't await - runs in background
         // Delay status update to ensure itemizedPrompts is populated
         setTimeout(() => update_status_display(), 100);
     });
 
-    eventSource.on(event_types.USER_MESSAGE_RENDERED, async (id) => {
-        await auto_summarize_chat();
+    eventSource.on(event_types.USER_MESSAGE_RENDERED, (id) => {
+        auto_summarize_chat();  // Don't await - runs in background
         // Delay status update to ensure itemizedPrompts is populated
         setTimeout(() => update_status_display(), 100);
     });
@@ -1096,12 +1096,22 @@ function initialize_ui_listeners() {
     
     bind_setting('#ct_enabled', 'enabled', 'boolean');
     bind_setting('#ct_target_size', 'target_context_size', 'number');
-    bind_setting('#ct_batch_size', 'batch_size', 'number');
     bind_setting('#ct_min_keep', 'min_messages_to_keep', 'number');
     bind_setting('#ct_auto_summarize', 'auto_summarize', 'boolean');
     bind_setting('#ct_connection_profile', 'connection_profile', 'text');
     bind_setting('#ct_max_words', 'summary_max_words', 'number');
     bind_setting('#ct_debug', 'debug_mode', 'boolean');
+    
+    // Batch size - reset truncation when changed
+    $('#ct_batch_size').val(get_settings('batch_size'));
+    $('#ct_batch_size').on('change', function() {
+        const value = Number($(this).val());
+        debug(`Setting [batch_size] changed to [${value}]`);
+        set_settings('batch_size', value);
+        reset_truncation_index();  // Reset when batch size changes
+        toastr.info('Batch size changed - truncation reset', MODULE_NAME_FANCY);
+        refresh_memory();
+    });
     
     // Initialize connection profile dropdown
     update_connection_profile_dropdown();

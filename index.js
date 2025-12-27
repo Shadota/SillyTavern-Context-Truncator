@@ -162,6 +162,11 @@ If something is not stated here or in recent chat, do not invent details. If sum
 // Global state
 let TRUNCATION_INDEX = null;  // Current truncation position
 
+// Popout state
+let POPOUT_VISIBLE = false;
+let $POPOUT = null;
+let $DRAWER_CONTENT = null;
+
 // Calibration state machine
 // States: INITIAL_TRAINING -> CALIBRATING -> RETRAINING -> STABLE
 let CALIBRATION_STATE = 'INITIAL_TRAINING';
@@ -1429,6 +1434,312 @@ function update_target_size_state() {
     }
 }
 
+// ==================== POPOUT FUNCTIONS ====================
+
+// Check if popout is currently visible
+function isPopoutVisible() {
+    return POPOUT_VISIBLE;
+}
+
+// Toggle the popout between open and closed states
+function togglePopout() {
+    if (POPOUT_VISIBLE) {
+        closePopout();
+    } else {
+        openPopout();
+    }
+}
+
+// Open the settings popout and move the drawer content inside it
+function openPopout() {
+    if (POPOUT_VISIBLE) return;
+    
+    const $drawer = $('#context_truncator_settings');
+    const $drawerHeader = $drawer.find('.inline-drawer-header');
+    const $drawerContentElement = $drawer.find('.inline-drawer-content');
+    const isCollapsed = !$drawerContentElement.hasClass('open');
+    
+    // If collapsed, trigger click to open first
+    if (isCollapsed) {
+        $drawerHeader.trigger('click');
+    }
+    
+    // Create the popout element
+    $POPOUT = $(`
+        <div id="ct_popout" class="draggable" style="display: none;">
+            <div class="panelControlBar flex-container" id="ctPopoutHeader">
+                <div class="fa-solid fa-chart-pie" style="margin-right: 10px;"></div>
+                <div class="title">${MODULE_NAME_FANCY}</div>
+                <div class="flex1"></div>
+                <div class="fa-solid fa-grip drag-grabber hoverglow" title="Drag to move"></div>
+                <div class="fa-solid fa-circle-xmark hoverglow dragClose" title="Close"></div>
+            </div>
+            <div id="ct_popout_content_container"></div>
+        </div>
+    `);
+    
+    // Append popout to body
+    $('body').append($POPOUT);
+    
+    // Move drawer content to popout
+    $drawerContentElement.detach().appendTo($POPOUT.find('#ct_popout_content_container'));
+    $drawerContentElement.addClass('open').show();
+    $DRAWER_CONTENT = $drawerContentElement;
+    
+    // Set up dragging using SillyTavern's dragElement if available
+    try {
+        const ctx = getContext();
+        if (typeof ctx.dragElement === 'function') {
+            ctx.dragElement($POPOUT);
+            debug_trunc('Popout: Using SillyTavern dragElement');
+        } else if (typeof window.dragElement === 'function') {
+            window.dragElement($POPOUT);
+            debug_trunc('Popout: Using window.dragElement');
+        } else {
+            // Fallback: Make header draggable manually
+            make_popout_draggable($POPOUT);
+            debug_trunc('Popout: Using fallback drag implementation');
+        }
+    } catch (e) {
+        debug_trunc('Popout: Drag setup failed, using fallback', e);
+        make_popout_draggable($POPOUT);
+    }
+    
+    // Load saved position if available
+    load_popout_position();
+    
+    // Set up close button handler
+    $POPOUT.find('.dragClose').on('click', () => closePopout());
+    
+    // Show the popout with animation
+    $POPOUT.fadeIn(250);
+    
+    // Update state
+    POPOUT_VISIBLE = true;
+    update_popout_button_state();
+    
+    debug_trunc('Popout opened');
+}
+
+// Close the settings popout and return the drawer content to its original location
+function closePopout() {
+    if (!POPOUT_VISIBLE || !$POPOUT) return;
+    
+    const $currentPopout = $POPOUT;
+    const $currentDrawerContent = $DRAWER_CONTENT;
+    
+    // Save position before closing
+    save_popout_position();
+    
+    $currentPopout.fadeOut(250, () => {
+        const $drawer = $('#context_truncator_settings');
+        
+        if ($currentDrawerContent) {
+            // Move content back to drawer
+            $currentDrawerContent.detach().appendTo($drawer);
+            $currentDrawerContent.addClass('open').show();
+        }
+        
+        // Remove popout element
+        $currentPopout.remove();
+        
+        if ($POPOUT === $currentPopout) {
+            $POPOUT = null;
+        }
+    });
+    
+    // Update state
+    POPOUT_VISIBLE = false;
+    $DRAWER_CONTENT = null;
+    update_popout_button_state();
+    
+    debug_trunc('Popout closed');
+}
+
+// Fallback drag implementation if SillyTavern's dragElement is not available
+function make_popout_draggable($element) {
+    const $header = $element.find('#ctPopoutHeader');
+    let isDragging = false;
+    let startX, startY, initialX, initialY;
+    
+    $header.on('mousedown', (e) => {
+        // Don't drag if clicking on close button or other interactive elements
+        if ($(e.target).hasClass('dragClose') || $(e.target).hasClass('hoverglow')) {
+            return;
+        }
+        
+        isDragging = true;
+        startX = e.clientX;
+        startY = e.clientY;
+        
+        const rect = $element[0].getBoundingClientRect();
+        initialX = rect.left;
+        initialY = rect.top;
+        
+        $header.css('cursor', 'grabbing');
+        e.preventDefault();
+    });
+    
+    $(document).on('mousemove.ctPopout', (e) => {
+        if (!isDragging) return;
+        
+        const deltaX = e.clientX - startX;
+        const deltaY = e.clientY - startY;
+        
+        let newX = initialX + deltaX;
+        let newY = initialY + deltaY;
+        
+        // Keep within viewport bounds
+        const maxX = window.innerWidth - $element.outerWidth();
+        const maxY = window.innerHeight - $element.outerHeight();
+        
+        newX = Math.max(0, Math.min(newX, maxX));
+        newY = Math.max(0, Math.min(newY, maxY));
+        
+        $element.css({
+            left: newX + 'px',
+            top: newY + 'px',
+            right: 'auto',
+            bottom: 'auto'
+        });
+    });
+    
+    $(document).on('mouseup.ctPopout', () => {
+        if (isDragging) {
+            isDragging = false;
+            $header.css('cursor', 'grab');
+            save_popout_position();
+        }
+    });
+}
+
+// Save popout position to localStorage
+function save_popout_position() {
+    if (!$POPOUT) return;
+    
+    const position = {
+        left: $POPOUT.css('left'),
+        top: $POPOUT.css('top'),
+        right: $POPOUT.css('right'),
+        width: $POPOUT.css('width')
+    };
+    
+    localStorage.setItem('ct_popout_position', JSON.stringify(position));
+    debug_trunc('Popout position saved:', position);
+}
+
+// Load popout position from localStorage
+function load_popout_position() {
+    if (!$POPOUT) return;
+    
+    const saved = localStorage.getItem('ct_popout_position');
+    
+    if (saved) {
+        try {
+            const position = JSON.parse(saved);
+            $POPOUT.css({
+                left: position.left || 'auto',
+                top: position.top || 'var(--topBarBlockSize, 50px)',
+                right: position.right || 'auto'
+            });
+            if (position.width) {
+                $POPOUT.css('width', position.width);
+            }
+            debug_trunc('Popout position loaded:', position);
+        } catch (e) {
+            debug_trunc('Failed to load popout position:', e);
+        }
+    }
+}
+
+// Update the popout toggle button appearance
+function update_popout_button_state() {
+    const $button = $('#ct_popout_button');
+    if ($button.length === 0) return;
+    
+    if (POPOUT_VISIBLE) {
+        $button.addClass('active');
+        $button.attr('title', 'Close floating window');
+    } else {
+        $button.removeClass('active');
+        $button.attr('title', 'Pop out settings to a floating window');
+    }
+}
+
+// Add popout toggle button to the drawer header
+function add_popout_button() {
+    const $header = $('#context_truncator_settings .inline-drawer-header');
+    if ($header.length === 0) {
+        debug_trunc('Popout button: Header not found');
+        return;
+    }
+    
+    // Don't add if already exists
+    if ($('#ct_popout_button').length > 0) {
+        debug_trunc('Popout button: Already exists');
+        return;
+    }
+    
+    // Create the popout button
+    const $button = $(`
+        <i id="ct_popout_button"
+           class="fa-solid fa-window-restore menu_button margin0 interactable"
+           tabindex="0"
+           title="Pop out settings to a floating window">
+        </i>
+    `);
+    
+    // Style the button
+    $button.css({
+        'margin-left': '5px',
+        'display': 'inline-flex',
+        'vertical-align': 'middle',
+        'cursor': 'pointer',
+        'font-size': '1em'
+    });
+    
+    // Click handler
+    $button.on('click', (event) => {
+        togglePopout();
+        event.stopPropagation();
+    });
+    
+    // Fix header layout for proper flex display
+    $header.css({
+        'display': 'flex',
+        'align-items': 'center',
+        'justify-content': 'space-between'
+    });
+    
+    // Find the title (b tag) and style it
+    const $title = $header.find('b');
+    $title.css({
+        'flex': '0 1 auto',
+        'white-space': 'nowrap',
+        'overflow': 'hidden',
+        'text-overflow': 'ellipsis'
+    });
+    
+    // Create a flex wrapper for the icon
+    const $iconWrapper = $('<div class="ct_header_controls"></div>');
+    $iconWrapper.css({
+        'display': 'flex',
+        'align-items': 'center',
+        'gap': '5px'
+    });
+    
+    // Move the chevron icon to the wrapper
+    const $chevron = $header.find('.inline-drawer-icon');
+    $chevron.detach();
+    $iconWrapper.append($button);
+    $iconWrapper.append($chevron);
+    
+    // Add wrapper to header
+    $header.append($iconWrapper);
+    
+    debug_trunc('Popout button added to header');
+}
+
 // ==================== MEMORY DISPLAY ====================
 
 // Update the memory display panel with current retrieved memories
@@ -1879,6 +2190,10 @@ function initialize_ui_listeners() {
             $(this).addClass('expanded');
         }
     });
+    
+    // ==================== POPOUT FEATURE ====================
+    // Add popout button to drawer header
+    add_popout_button();
 }
 
 // Tab navigation functionality

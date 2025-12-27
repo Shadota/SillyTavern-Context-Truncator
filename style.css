@@ -609,3 +609,153 @@
     flex: 1;
     min-width: 120px;
 }
+
+/* ==================== POPOUT WINDOW ==================== */
+#ct_popout {
+    position: fixed;
+    top: var(--topBarBlockSize, 50px);
+    right: 10px;
+    width: 420px;
+    max-width: calc(100vw - 20px);
+    max-height: calc(100vh - var(--topBarBlockSize, 50px) - 20px);
+    overflow: hidden;
+    background-color: var(--SmartThemeBlurTintColor);
+    border: 1px solid var(--SmartThemeBorderColor);
+    border-radius: 10px;
+    z-index: 10000;
+    box-shadow: 0 4px 20px rgba(0, 0, 0, 0.4);
+}
+
+/* Popout control bar (header) */
+#ct_popout .panelControlBar {
+    padding: 10px 15px;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    position: sticky;
+    top: 0;
+    font-weight: 500;
+    border-bottom: 1px solid var(--SmartThemeBorderColor);
+    background: var(--SmartThemeBlurTintColor);
+    cursor: grab;
+    z-index: 1;
+}
+
+#ct_popout .panelControlBar:active {
+    cursor: grabbing;
+}
+
+#ct_popout .panelControlBar .title {
+    font-size: 1em;
+    font-weight: bold;
+}
+
+#ct_popout .panelControlBar .fa-chart-pie {
+    color: #90caf9;
+}
+
+#ct_popout .panelControlBar .flex1 {
+    flex: 1;
+}
+
+/* Drag grabber icon */
+#ct_popout .drag-grabber {
+    cursor: grab;
+    padding: 5px 10px;
+    opacity: 0.6;
+    transition: opacity 0.2s ease;
+}
+
+#ct_popout .drag-grabber:hover {
+    opacity: 1;
+}
+
+#ct_popout .drag-grabber:active {
+    cursor: grabbing;
+}
+
+/* Close button */
+#ct_popout .dragClose {
+    cursor: pointer;
+    padding: 5px 10px;
+    color: var(--SmartThemeBodyColor);
+    opacity: 0.6;
+    transition: opacity 0.2s ease, color 0.2s ease;
+}
+
+#ct_popout .dragClose:hover {
+    color: #ff6b6b;
+    opacity: 1;
+}
+
+/* Hover glow effect */
+#ct_popout .hoverglow:hover {
+    filter: brightness(1.2);
+}
+
+/* Content container */
+#ct_popout_content_container {
+    padding: 0;
+    max-height: calc(100vh - var(--topBarBlockSize, 50px) - 80px);
+    overflow-y: auto;
+}
+
+#ct_popout_content_container .inline-drawer-content {
+    padding: 15px;
+}
+
+/* ==================== POPOUT TOGGLE BUTTON ==================== */
+#ct_popout_button {
+    cursor: pointer;
+    opacity: 0.7;
+    transition: opacity 0.2s ease, color 0.2s ease;
+}
+
+#ct_popout_button:hover {
+    opacity: 1;
+}
+
+#ct_popout_button.active {
+    color: #90caf9;
+    opacity: 1;
+}
+
+/* Header controls wrapper */
+.ct_header_controls {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+}
+
+/* Fix drawer header for popout button */
+#context_truncator_settings .inline-drawer-header {
+    display: flex !important;
+    align-items: center !important;
+    justify-content: space-between !important;
+}
+
+#context_truncator_settings .inline-drawer-header b {
+    flex: 0 1 auto;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+/* ==================== RESPONSIVE POPOUT ==================== */
+@media screen and (max-width: 500px) {
+    #ct_popout {
+        width: calc(100vw - 20px);
+        right: 10px;
+        left: 10px;
+    }
+}
+
+@media screen and (max-height: 600px) {
+    #ct_popout {
+        max-height: calc(100vh - var(--topBarBlockSize, 50px) - 10px);
+    }
+    
+    #ct_popout_content_container {
+        max-height: calc(100vh - var(--topBarBlockSize, 50px) - 60px);
+    }
+}

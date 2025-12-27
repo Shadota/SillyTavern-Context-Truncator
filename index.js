@@ -105,6 +105,7 @@ Recent chat always takes precedence over these notes.
     score_threshold: 0.3,
     memory_position: 3,
     retain_recent_messages: 5,
+    qdrant_min_messages: 20,  // Only retrieve memories after this many messages in chat
     
     // Auto-save settings
     auto_save_memories: true,
@@ -132,8 +133,8 @@ let $POPOUT = null;
 let $DRAWER_CONTENT = null;
 
 // Calibration state machine
-// States: INITIAL_TRAINING -> CALIBRATING -> RETRAINING -> STABLE
-let CALIBRATION_STATE = 'INITIAL_TRAINING';
+// States: WAITING -> INITIAL_TRAINING -> CALIBRATING -> RETRAINING -> STABLE
+let CALIBRATION_STATE = 'WAITING';
 let GENERATION_COUNT = 0;      // Generations in current phase
 let STABLE_COUNT = 0;          // Consecutive stable generations
 let RETRAIN_COUNT = 0;         // Generations in retraining phase
@@ -1046,23 +1047,31 @@ function update_status_display() {
 
 // Reset calibration state
 function reset_calibration() {
-    CALIBRATION_STATE = 'INITIAL_TRAINING';
+    CALIBRATION_STATE = 'WAITING';
     GENERATION_COUNT = 0;
     STABLE_COUNT = 0;
     RETRAIN_COUNT = 0;
     CHAT_TOKEN_CORRECTION_FACTOR = 1.0;
     
-    debug('Calibration reset to INITIAL_TRAINING');
+    debug('Calibration reset to WAITING');
     update_calibration_ui();
     
-    toastr.info('Calibration reset - starting fresh training', MODULE_NAME_FANCY);
+    toastr.info('Calibration reset - will start when context threshold is reached', MODULE_NAME_FANCY);
 }
 
 // Auto-calibrate target context size based on actual usage
 function calibrate_target_size(actualSize) {
     const maxContext = getMaxContextSize();
     const targetUtilization = get_settings('target_utilization');
+    const autoCalibrate = get_settings('auto_calibrate_target');
     const idealTarget = Math.floor(maxContext * targetUtilization);
+    
+    // Calculate the threshold for when to start calibrating
+    // Use target_utilization * max_context if auto-calibration is enabled
+    // Otherwise use target_context_size as the threshold
+    const startThreshold = autoCalibrate
+        ? Math.floor(maxContext * targetUtilization)
+        : get_settings('target_context_size');
     
     // Update Qdrant token history for averaging (Fix 3.2)
     update_qdrant_token_history();
@@ -1079,6 +1088,7 @@ function calibrate_target_size(actualSize) {
     debug_trunc(`  Current state: ${CALIBRATION_STATE}`);
     debug_trunc(`  Max context: ${maxContext} tokens`);
     debug_trunc(`  Target utilization: ${(targetUtilization * 100).toFixed(1)}%`);
+    debug_trunc(`  Start threshold: ${startThreshold.toLocaleString()} tokens`);
     debug_trunc(`  Tolerance: ${(tolerance * 100).toFixed(1)}%`);
     debug_trunc(`  `);
     debug_trunc(`  Actual prompt: ${actualSize} tokens`);
@@ -1087,6 +1097,22 @@ function calibrate_target_size(actualSize) {
     debug_trunc(`  Within tolerance: ${deviation <= tolerance ? 'YES' : 'NO'}`);
     
     switch (CALIBRATION_STATE) {
+        case 'WAITING':
+            // Check if we've reached the threshold to start calibrating
+            debug_trunc(`  `);
+            if (actualSize < startThreshold) {
+                debug_trunc(`  Waiting: ${actualSize.toLocaleString()} tokens < threshold ${startThreshold.toLocaleString()} tokens`);
+                debug_trunc(`  → Remaining in WAITING`);
+            } else {
+                // Transition to INITIAL_TRAINING
+                CALIBRATION_STATE = 'INITIAL_TRAINING';
+                GENERATION_COUNT = 0;
+                debug_trunc(`  Threshold reached: ${actualSize.toLocaleString()} tokens >= ${startThreshold.toLocaleString()} tokens`);
+                debug_trunc(`  → Transitioning to INITIAL_TRAINING`);
+                toastr.info('Context threshold reached - starting calibration training', MODULE_NAME_FANCY);
+            }
+            break;
+            
         case 'INITIAL_TRAINING':
             // Wait for correction factor to stabilize
             GENERATION_COUNT++;
@@ -1286,9 +1312,19 @@ function update_calibration_ui() {
     $panel.show();
     
     // Update phase with color coding
-    $phase.removeClass('ct_phase_training ct_phase_calibrating ct_phase_retraining ct_phase_stable');
+    $phase.removeClass('ct_phase_waiting ct_phase_training ct_phase_calibrating ct_phase_retraining ct_phase_stable');
+    
+    const maxContext = getMaxContextSize();
+    const autoCalibrate = get_settings('auto_calibrate_target');
+    const startThreshold = autoCalibrate
+        ? Math.floor(maxContext * get_settings('target_utilization'))
+        : get_settings('target_context_size');
     
     switch (CALIBRATION_STATE) {
+        case 'WAITING':
+            $phase.text('Waiting').addClass('ct_phase_waiting');
+            $progress.text(`${LAST_ACTUAL_PROMPT_SIZE.toLocaleString()} / ${startThreshold.toLocaleString()} tokens`);
+            break;
         case 'INITIAL_TRAINING':
             $phase.text('Initial Training').addClass('ct_phase_training');
             $progress.text(`${GENERATION_COUNT}/${TRAINING_GENERATIONS} generations`);
@@ -1311,7 +1347,6 @@ function update_calibration_ui() {
     $target.text(`${get_settings('target_context_size').toLocaleString()} tokens`);
     
     if (LAST_ACTUAL_PROMPT_SIZE > 0) {
-        const maxContext = getMaxContextSize();
         const utilization = (LAST_ACTUAL_PROMPT_SIZE / maxContext * 100).toFixed(1);
         $utilization.text(`${utilization}%`);
     } else {
@@ -1393,7 +1428,17 @@ function update_overview_tab() {
         let phaseClass = '';
         let progressText = '--';
         
+        const autoCalibrate = get_settings('auto_calibrate_target');
+        const startThreshold = autoCalibrate
+            ? Math.floor(maxContext * get_settings('target_utilization'))
+            : get_settings('target_context_size');
+        
         switch (CALIBRATION_STATE) {
+            case 'WAITING':
+                phaseText = 'Waiting';
+                phaseClass = 'ct_phase_waiting';
+                progressText = `${LAST_ACTUAL_PROMPT_SIZE.toLocaleString()} / ${startThreshold.toLocaleString()}`;
+                break;
             case 'INITIAL_TRAINING':
                 phaseText = 'Initial Training';
                 phaseClass = 'ct_phase_training';
@@ -1416,7 +1461,7 @@ function update_overview_tab() {
                 break;
         }
         
-        $('#ct_ov_cal_phase').text(phaseText).removeClass('ct_phase_training ct_phase_calibrating ct_phase_retraining ct_phase_stable').addClass(phaseClass);
+        $('#ct_ov_cal_phase').text(phaseText).removeClass('ct_phase_waiting ct_phase_training ct_phase_calibrating ct_phase_retraining ct_phase_stable').addClass(phaseClass);
         $('#ct_ov_cal_progress').text(progressText);
         $('#ct_ov_cal_target').text(`${get_settings('target_context_size').toLocaleString()} tokens`);
         
@@ -1427,7 +1472,7 @@ function update_overview_tab() {
             $('#ct_ov_cal_util').text('-');
         }
     } else {
-        $('#ct_ov_cal_phase').text('Disabled').removeClass('ct_phase_training ct_phase_calibrating ct_phase_retraining ct_phase_stable');
+        $('#ct_ov_cal_phase').text('Disabled').removeClass('ct_phase_waiting ct_phase_training ct_phase_calibrating ct_phase_retraining ct_phase_stable');
         $('#ct_ov_cal_progress').text('--');
         $('#ct_ov_cal_target').text(`${get_settings('target_context_size').toLocaleString()} tokens`);
         $('#ct_ov_cal_util').text('-');
@@ -1558,6 +1603,20 @@ function get_calibration_prediction() {
     }
     
     switch (CALIBRATION_STATE) {
+        case 'WAITING':
+            const maxContext = getMaxContextSize();
+            const startThreshold = Math.floor(maxContext * get_settings('target_utilization'));
+            const tokensNeeded = startThreshold - LAST_ACTUAL_PROMPT_SIZE;
+            if (tokensNeeded > 0) {
+                return {
+                    text: `Waiting: ~${tokensNeeded.toLocaleString()} tokens until threshold`,
+                    class: 'ct_text_muted'
+                };
+            }
+            return {
+                text: 'Threshold reached - starting soon',
+                class: 'ct_text_yellow'
+            };
         case 'INITIAL_TRAINING':
             const trainingLeft = TRAINING_GENERATIONS - GENERATION_COUNT;
             return {
@@ -2399,6 +2458,7 @@ function initialize_ui_listeners() {
     bind_range_setting('#ct_score_threshold', 'score_threshold', '#ct_score_threshold_display', true);
     bind_range_setting('#ct_memory_position', 'memory_position', '#ct_memory_position_display');
     bind_range_setting('#ct_retain_recent', 'retain_recent_messages', '#ct_retain_recent_display');
+    bind_range_setting('#ct_qdrant_min_messages', 'qdrant_min_messages', '#ct_qdrant_min_messages_display');
     
     // Auto-save settings
     bind_setting('#ct_auto_save_memories', 'auto_save_memories', 'boolean');
@@ -3257,6 +3317,13 @@ async function retrieve_relevant_memories() {
     const chat = ctx.chat;
     
     if (!chat || chat.length === 0) {
+        return [];
+    }
+    
+    // Check minimum message count before retrieving
+    const minMessages = get_settings('qdrant_min_messages');
+    if (chat.length < minMessages) {
+        debug_qdrant(`Qdrant retrieval deferred: ${chat.length} messages < minimum ${minMessages}`);
         return [];
     }
     

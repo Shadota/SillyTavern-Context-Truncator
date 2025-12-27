@@ -544,6 +544,14 @@
                     <small>Don't retrieve memories from the last N messages (they're already in context)</small>
                 </div>
 
+                <div class="flex-container flexFlowColumn">
+                    <label for="ct_qdrant_min_messages">
+                        <span>Minimum Messages: <span id="ct_qdrant_min_messages_display">20</span></span>
+                    </label>
+                    <input id="ct_qdrant_min_messages" class="text_pole" type="range" min="0" max="100" step="5" value="20" />
+                    <small>Only retrieve memories after chat has at least this many messages. Early messages are unlikely to have relevant matches.</small>
+                </div>
+
                 <hr>
 
                 <!-- Automatic Memory Creation -->

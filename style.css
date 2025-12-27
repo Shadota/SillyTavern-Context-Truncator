@@ -266,6 +266,10 @@
 }
 
 /* Calibration phase colors */
+.ct_phase_waiting {
+    color: #9e9e9e;
+}
+
 .ct_phase_training {
     color: #ffcc00;
 }
@@ -790,6 +794,11 @@
 
 .ct_text_gray {
     color: #9e9e9e;
+}
+
+.ct_text_muted {
+    color: #757575;
+    font-style: italic;
 }
 
 /* ==================== SUMMARIZATION PROGRESS BAR ==================== */

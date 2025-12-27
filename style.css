@@ -619,7 +619,7 @@
     position: fixed;
     top: var(--topBarBlockSize, 50px);
     right: 10px;
-    width: 480px;
+    width: 540px;
     max-width: calc(100vw - 20px);
     max-height: calc(100vh - var(--topBarBlockSize, 50px) - 20px);
     overflow: hidden;

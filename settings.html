@@ -320,32 +320,6 @@
                     <small>Acceptable deviation from target utilization before re-calibrating</small>
                 </div>
 
-                <!-- Calibration Status Panel -->
-                <div id="ct_calibration_status" class="ct_calibration_panel" style="display: none;">
-                    <div class="ct_calibration_header">
-                        <i class="fa-solid fa-chart-line"></i>
-                        <span>Calibration Status</span>
-                    </div>
-                    <div class="ct_calibration_content">
-                        <div class="ct_calibration_row">
-                            <span class="ct_calibration_label">Phase:</span>
-                            <span id="ct_calibration_phase" class="ct_calibration_value">-</span>
-                        </div>
-                        <div class="ct_calibration_row">
-                            <span class="ct_calibration_label">Progress:</span>
-                            <span id="ct_calibration_progress" class="ct_calibration_value">-</span>
-                        </div>
-                        <div class="ct_calibration_row">
-                            <span class="ct_calibration_label">Current Target:</span>
-                            <span id="ct_calibration_target" class="ct_calibration_value">-</span>
-                        </div>
-                        <div class="ct_calibration_row">
-                            <span class="ct_calibration_label">Last Utilization:</span>
-                            <span id="ct_calibration_utilization" class="ct_calibration_value">-</span>
-                        </div>
-                    </div>
-                </div>
-
                 <div class="flex-container flexFlowColumn" style="margin-top: 10px;">
                     <button id="ct_recalibrate" class="menu_button">
                         <i class="fa-solid fa-sync"></i>
@@ -412,48 +386,10 @@
                     <small>Manually summarize all messages in the current chat that don't have summaries yet</small>
                 </div>
 
-                <!-- Summarization Statistics Panel -->
-                <div id="ct_summary_stats_panel" class="ct_calibration_panel" style="margin-top: 15px;">
-                    <div class="ct_calibration_header">
-                        <i class="fa-solid fa-file-lines"></i>
-                        <span>Summarization Statistics</span>
-                    </div>
-                    <div class="ct_calibration_content">
-                        <!-- Progress bar showing summarization status -->
-                        <div class="ct_sum_progress_container">
-                            <div class="ct_sum_progress_bar">
-                                <div id="ct_sum_bar_done" class="ct_sum_bar_segment ct_sum_done" style="width: 0%"></div>
-                                <div id="ct_sum_bar_pending" class="ct_sum_bar_segment ct_sum_pending" style="width: 0%"></div>
-                                <div id="ct_sum_bar_queue" class="ct_sum_bar_segment ct_sum_queue" style="width: 0%"></div>
-                                <div id="ct_sum_bar_active" class="ct_sum_bar_segment ct_sum_active" style="width: 0%"></div>
-                                <div id="ct_sum_bar_na" class="ct_sum_bar_segment ct_sum_na" style="width: 0%"></div>
-                            </div>
-                        </div>
-                        <div class="ct_sum_legend">
-                            <span class="ct_sum_legend_item"><span class="ct_legend_dot ct_sum_done"></span>Summarized (<span id="ct_sum_done_count">0</span>)</span>
-                            <span class="ct_sum_legend_item"><span class="ct_legend_dot ct_sum_pending"></span>Pending (<span id="ct_sum_pending_count">0</span>)</span>
-                            <span class="ct_sum_legend_item"><span class="ct_legend_dot ct_sum_queue"></span>In Queue (<span id="ct_sum_queue_count">0</span>)</span>
-                            <span class="ct_sum_legend_item"><span class="ct_legend_dot ct_sum_active"></span>In Context (<span id="ct_sum_active_count">0</span>)</span>
-                            <span class="ct_sum_legend_item"><span class="ct_legend_dot ct_sum_na"></span>N/A (<span id="ct_sum_na_count">0</span>)</span>
-                        </div>
-                        <div class="ct_calibration_row" style="margin-top: 10px;">
-                            <span class="ct_calibration_label">Total Messages:</span>
-                            <span id="ct_sum_total_count" class="ct_calibration_value">0</span>
-                        </div>
-                    </div>
-                </div>
-
                 <hr>
 
-                <!-- Status and Controls -->
-                <h4>Status and Controls</h4>
-                
-                <div class="flex-container flexFlowColumn">
-                    <div id="ct_status_display" style="padding: 10px; border-radius: 5px; margin-bottom: 10px; display: none;">
-                        <div style="font-weight: bold; margin-bottom: 5px;">Last Generation:</div>
-                        <div id="ct_status_text"></div>
-                    </div>
-                </div>
+                <!-- Controls -->
+                <h4>Controls</h4>
                 
                 <div class="flex-container flexFlowColumn">
                     <button id="ct_reset" class="menu_button">

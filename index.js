@@ -173,8 +173,12 @@ let CALIBRATION_STATE = 'INITIAL_TRAINING';
 let GENERATION_COUNT = 0;      // Generations in current phase
 let STABLE_COUNT = 0;          // Consecutive stable generations
 let RETRAIN_COUNT = 0;         // Generations in retraining phase
-const TRAINING_GENERATIONS = 3;  // Generations needed to train correction factor
+const TRAINING_GENERATIONS = 2;  // Generations needed to train correction factor (reduced from 3)
 const STABLE_THRESHOLD = 5;      // Consecutive stable gens to reach STABLE state
+
+// Qdrant token averaging for variance handling
+let QDRANT_TOKEN_HISTORY = [];  // Rolling history of Qdrant injection tokens
+const QDRANT_HISTORY_SIZE = 5;  // Number of samples to average
 
 // Utility functions
 function log(...args) {
@@ -464,6 +468,12 @@ function load_truncation_index() {
     } else {
         debug(`No truncation index found`);
     }
+    
+    // Also load correction factor if saved (Fix 4.2: Preserve correction factor across chat switches)
+    if (chat_metadata?.[MODULE_NAME]?.correction_factor !== undefined) {
+        CHAT_TOKEN_CORRECTION_FACTOR = chat_metadata[MODULE_NAME].correction_factor;
+        debug(`Loaded correction factor: ${CHAT_TOKEN_CORRECTION_FACTOR.toFixed(3)}`);
+    }
 }
 
 function save_truncation_index() {
@@ -480,7 +490,9 @@ function save_truncation_index() {
 function reset_truncation_index() {
     debug('Resetting truncation index');
     TRUNCATION_INDEX = null;
-    CHAT_TOKEN_CORRECTION_FACTOR = 1.0;  // Reset correction factor
+    // NOTE: We intentionally do NOT reset CHAT_TOKEN_CORRECTION_FACTOR here
+    // The correction factor is learned over time and should persist across
+    // target size changes to maintain calibration stability
     save_truncation_index();
 }
 
@@ -982,9 +994,15 @@ function update_status_display() {
         const newCorrectionFactor = actualChatTokens / LAST_PREDICTED_CHAT_SIZE;
         const oldCorrectionFactor = CHAT_TOKEN_CORRECTION_FACTOR;
         
-        // Smooth the correction factor (exponential moving average with alpha=0.3)
-        // This prevents wild swings from a single bad estimate
-        CHAT_TOKEN_CORRECTION_FACTOR = (0.3 * newCorrectionFactor) + (0.7 * CHAT_TOKEN_CORRECTION_FACTOR);
+        // Fix 2.1: Adaptive EMA alpha based on error magnitude
+        // Smaller errors = smaller alpha (more stable), larger errors = larger alpha (faster correction)
+        const errorMagnitude = Math.abs(newCorrectionFactor - oldCorrectionFactor);
+        const baseAlpha = 0.15;  // Reduced from 0.3 for more stability
+        const maxAlpha = 0.4;    // Maximum alpha for large errors
+        const adaptiveAlpha = Math.min(baseAlpha + (errorMagnitude * 0.5), maxAlpha);
+        
+        // Smooth the correction factor using adaptive EMA
+        CHAT_TOKEN_CORRECTION_FACTOR = (adaptiveAlpha * newCorrectionFactor) + ((1 - adaptiveAlpha) * CHAT_TOKEN_CORRECTION_FACTOR);
         
         // Log correction factor updates
         debug_trunc(`═══════════════════════════════════════════════════════════════`);
@@ -1071,8 +1089,13 @@ function reset_calibration() {
 function calibrate_target_size(actualSize) {
     const maxContext = getMaxContextSize();
     const targetUtilization = get_settings('target_utilization');
-    const tolerance = get_settings('calibration_tolerance');
     const idealTarget = Math.floor(maxContext * targetUtilization);
+    
+    // Update Qdrant token history for averaging (Fix 3.2)
+    update_qdrant_token_history();
+    
+    // Fix 3.1: Use dynamic tolerance that accounts for Qdrant variance
+    const tolerance = get_dynamic_tolerance();
     
     // Calculate current utilization
     const currentUtilization = actualSize / maxContext;
@@ -1124,8 +1147,11 @@ function calibrate_target_size(actualSize) {
                     debug_trunc(`  → Remaining in CALIBRATING`);
                 }
             } else {
-                STABLE_COUNT = 0;
-                debug_trunc(`  Outside tolerance, recalculating...`);
+                // Fix 1.2: Gradual decay instead of complete reset
+                // Only decay by 1-2 instead of resetting to 0, preserving some progress
+                const decayAmount = deviation > tolerance * 1.5 ? 2 : 1;
+                STABLE_COUNT = Math.max(0, STABLE_COUNT - decayAmount);
+                debug_trunc(`  Outside tolerance, stable count decayed by ${decayAmount} to ${STABLE_COUNT}`);
                 
                 // Recalculate target
                 calculate_calibrated_target(maxContext, targetUtilization);
@@ -1178,7 +1204,20 @@ function calculate_calibrated_target(maxContext, targetUtilization) {
     // If correction factor < 1, we're overestimating (need lower target)
     
     const idealTarget = Math.floor(maxContext * targetUtilization);
-    const adjustedTarget = Math.floor(idealTarget / CHAT_TOKEN_CORRECTION_FACTOR);
+    
+    // Fix 3.1 & 3.2: Account for Qdrant variance using averaged tokens
+    let qdrantAdjustment = 0;
+    if (get_settings('qdrant_enabled') && get_settings('account_qdrant_tokens')) {
+        qdrantAdjustment = get_averaged_qdrant_tokens();
+        debug_trunc(`    Qdrant token average: ${qdrantAdjustment} (from ${QDRANT_TOKEN_HISTORY.length} samples)`);
+    }
+    
+    // Fix 4.1: Dampened target adjustment - move only 70% toward the ideal
+    // This prevents overcorrection and oscillation
+    const rawAdjustedTarget = Math.floor((idealTarget - qdrantAdjustment) / CHAT_TOKEN_CORRECTION_FACTOR);
+    const currentTarget = get_settings('target_context_size');
+    const dampingFactor = 0.7;  // Only move 70% of the way to the new target
+    const adjustedTarget = Math.floor(currentTarget + (rawAdjustedTarget - currentTarget) * dampingFactor);
     
     // Clamp to reasonable bounds
     const minTarget = Math.floor(maxContext * 0.3);  // At least 30% of max
@@ -1187,15 +1226,16 @@ function calculate_calibrated_target(maxContext, targetUtilization) {
     
     debug_trunc(`  Calculating calibrated target:`);
     debug_trunc(`    Ideal target: ${idealTarget}`);
+    debug_trunc(`    Qdrant adjustment: ${qdrantAdjustment}`);
     debug_trunc(`    Correction factor: ${CHAT_TOKEN_CORRECTION_FACTOR.toFixed(3)}`);
-    debug_trunc(`    Adjusted target: ${adjustedTarget}`);
+    debug_trunc(`    Raw adjusted target: ${rawAdjustedTarget}`);
+    debug_trunc(`    Dampened target: ${adjustedTarget}`);
     debug_trunc(`    Final target: ${finalTarget}`);
     
-    // Only update if significantly different (>2% change)
-    const currentTarget = get_settings('target_context_size');
+    // Fix 3.3: Only update if significantly different (>5% change, increased from 2%)
     const changePct = Math.abs(finalTarget - currentTarget) / currentTarget;
     
-    if (changePct > 0.02) {
+    if (changePct > 0.05) {
         set_settings('target_context_size', finalTarget);
         $('#ct_target_size').val(finalTarget);
         
@@ -1205,6 +1245,55 @@ function calculate_calibrated_target(maxContext, targetUtilization) {
         debug_trunc(`  Updated target from ${currentTarget} to ${finalTarget}`);
     } else {
         debug_trunc(`  Target change too small (${(changePct * 100).toFixed(1)}%), keeping ${currentTarget}`);
+    }
+}
+
+// Fix 3.1: Get dynamic tolerance that accounts for Qdrant variance
+function get_dynamic_tolerance() {
+    const baseTolerance = get_settings('calibration_tolerance');
+    
+    if (!get_settings('qdrant_enabled') || QDRANT_TOKEN_HISTORY.length < 2) {
+        return baseTolerance;
+    }
+    
+    // Calculate variance in Qdrant tokens
+    const avg = QDRANT_TOKEN_HISTORY.reduce((a, b) => a + b, 0) / QDRANT_TOKEN_HISTORY.length;
+    const variance = QDRANT_TOKEN_HISTORY.reduce((sum, val) => sum + Math.pow(val - avg, 2), 0) / QDRANT_TOKEN_HISTORY.length;
+    const stdDev = Math.sqrt(variance);
+    
+    // Add extra tolerance based on Qdrant variance (as percentage of max context)
+    const maxContext = getMaxContextSize();
+    const varianceTolerance = (stdDev / maxContext) * 2;  // 2x std dev as extra tolerance
+    
+    const dynamicTolerance = Math.min(baseTolerance + varianceTolerance, 0.15);  // Cap at 15%
+    
+    debug_trunc(`  Dynamic tolerance: ${(dynamicTolerance * 100).toFixed(1)}% (base: ${(baseTolerance * 100).toFixed(1)}%, variance: ${(varianceTolerance * 100).toFixed(1)}%)`);
+    
+    return dynamicTolerance;
+}
+
+// Fix 3.2: Get averaged Qdrant tokens for stable estimation
+function get_averaged_qdrant_tokens() {
+    if (QDRANT_TOKEN_HISTORY.length === 0) {
+        return get_qdrant_injection_tokens();
+    }
+    
+    return Math.floor(QDRANT_TOKEN_HISTORY.reduce((a, b) => a + b, 0) / QDRANT_TOKEN_HISTORY.length);
+}
+
+// Update Qdrant token history
+function update_qdrant_token_history() {
+    const currentTokens = get_qdrant_injection_tokens();
+    
+    if (currentTokens > 0) {
+        QDRANT_TOKEN_HISTORY.push(currentTokens);
+        
+        // Keep only the last N samples
+        if (QDRANT_TOKEN_HISTORY.length > QDRANT_HISTORY_SIZE) {
+            QDRANT_TOKEN_HISTORY.shift();
+        }
+        
+        debug_qdrant(`Qdrant token history updated: ${currentTokens} tokens (${QDRANT_TOKEN_HISTORY.length} samples)`);
     }
 }
 
@@ -1928,12 +2017,14 @@ function register_event_listeners() {
         if (currentChatId !== null && currentChatId !== newChatId) {
             debug('Chat switched, loading truncation index');
             TRUNCATION_INDEX = null;
-            CHAT_TOKEN_CORRECTION_FACTOR = 1.0;  // Reset correction factor for new chat
+            // Fix 4.2: Don't reset correction factor here - load_truncation_index will load the saved one
+            // CHAT_TOKEN_CORRECTION_FACTOR = 1.0;  // REMOVED - this was destroying learned calibration
             load_truncation_index();
             
-            // Clear Qdrant memories for new chat
+            // Clear Qdrant memories and history for new chat
             CURRENT_QDRANT_MEMORIES = [];
             CURRENT_QDRANT_INJECTION = '';
+            QDRANT_TOKEN_HISTORY = [];  // Reset Qdrant token history for new chat
         }
         currentChatId = newChatId;
         refresh_memory();

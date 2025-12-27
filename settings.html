@@ -8,7 +8,10 @@
             
             <!-- Tab Navigation -->
             <div class="ct_tabs">
-                <button class="ct_tab ct_tab_active" data-tab="truncation">
+                <button class="ct_tab ct_tab_active" data-tab="overview">
+                    <i class="fa-solid fa-chart-pie"></i> Overview
+                </button>
+                <button class="ct_tab" data-tab="truncation">
                     <i class="fa-solid fa-scissors"></i> Truncation
                 </button>
                 <button class="ct_tab" data-tab="qdrant">
@@ -19,8 +22,151 @@
                 </button>
             </div>
 
+            <!-- ==================== OVERVIEW TAB ==================== -->
+            <div class="ct_tab_content ct_tab_content_active" data-tab="overview">
+                
+                <!-- Context Utilization Gauge -->
+                <div class="ct_overview_section">
+                    <h4><i class="fa-solid fa-gauge-high"></i> Context Utilization</h4>
+                    <div class="ct_gauge_container">
+                        <div class="ct_gauge_bar">
+                            <div id="ct_gauge_fill" class="ct_gauge_fill ct_gauge_green" style="width: 0%"></div>
+                            <div class="ct_gauge_markers">
+                                <span class="ct_gauge_marker" style="left: 80%">80%</span>
+                                <span class="ct_gauge_marker" style="left: 90%">90%</span>
+                            </div>
+                        </div>
+                        <div class="ct_gauge_labels">
+                            <span id="ct_gauge_value">--%</span>
+                            <span id="ct_gauge_max">of -- tokens</span>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Context Breakdown Bar -->
+                <div class="ct_overview_section">
+                    <h4><i class="fa-solid fa-chart-bar"></i> Context Breakdown</h4>
+                    <div class="ct_breakdown_container">
+                        <div class="ct_breakdown_bar">
+                            <div id="ct_breakdown_chat" class="ct_breakdown_segment ct_breakdown_chat" style="width: 0%"></div>
+                            <div id="ct_breakdown_system" class="ct_breakdown_segment ct_breakdown_system" style="width: 0%"></div>
+                            <div id="ct_breakdown_summaries" class="ct_breakdown_segment ct_breakdown_summaries" style="width: 0%"></div>
+                            <div id="ct_breakdown_qdrant" class="ct_breakdown_segment ct_breakdown_qdrant" style="width: 0%"></div>
+                            <div id="ct_breakdown_free" class="ct_breakdown_segment ct_breakdown_free" style="width: 100%"></div>
+                        </div>
+                        <div class="ct_breakdown_legend">
+                            <span class="ct_legend_item"><span class="ct_legend_color ct_breakdown_chat"></span>Chat</span>
+                            <span class="ct_legend_item"><span class="ct_legend_color ct_breakdown_system"></span>System</span>
+                            <span class="ct_legend_item"><span class="ct_legend_color ct_breakdown_summaries"></span>Summaries</span>
+                            <span class="ct_legend_item"><span class="ct_legend_color ct_breakdown_qdrant"></span>Qdrant</span>
+                            <span class="ct_legend_item"><span class="ct_legend_color ct_breakdown_free"></span>Free</span>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Stats Cards Grid -->
+                <div class="ct_stats_grid">
+                    
+                    <!-- Truncation Stats Card -->
+                    <div class="ct_stats_card">
+                        <div class="ct_card_header">
+                            <i class="fa-solid fa-scissors"></i>
+                            <span>Truncation Stats</span>
+                        </div>
+                        <div class="ct_card_content">
+                            <div class="ct_stat_row">
+                                <span class="ct_stat_label">Actual Size</span>
+                                <span id="ct_ov_actual_size" class="ct_stat_value">--</span>
+                            </div>
+                            <div class="ct_stat_row">
+                                <span class="ct_stat_label">Target Size</span>
+                                <span id="ct_ov_target_size" class="ct_stat_value">--</span>
+                            </div>
+                            <div class="ct_stat_row">
+                                <span class="ct_stat_label">Difference</span>
+                                <span id="ct_ov_difference" class="ct_stat_value">--</span>
+                            </div>
+                            <div class="ct_stat_row">
+                                <span class="ct_stat_label">Error</span>
+                                <span id="ct_ov_error" class="ct_stat_value">--</span>
+                            </div>
+                            <div class="ct_stat_row">
+                                <span class="ct_stat_label">Truncation Index</span>
+                                <span id="ct_ov_trunc_index" class="ct_stat_value">--</span>
+                            </div>
+                            <div class="ct_stat_row">
+                                <span class="ct_stat_label">Correction Factor</span>
+                                <span id="ct_ov_correction" class="ct_stat_value">--</span>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Calibration Status Card -->
+                    <div class="ct_stats_card">
+                        <div class="ct_card_header">
+                            <i class="fa-solid fa-chart-line"></i>
+                            <span>Calibration Status</span>
+                        </div>
+                        <div class="ct_card_content">
+                            <div class="ct_stat_row">
+                                <span class="ct_stat_label">Phase</span>
+                                <span id="ct_ov_cal_phase" class="ct_stat_value">--</span>
+                            </div>
+                            <div class="ct_stat_row">
+                                <span class="ct_stat_label">Progress</span>
+                                <span id="ct_ov_cal_progress" class="ct_stat_value">--</span>
+                            </div>
+                            <div class="ct_stat_row">
+                                <span class="ct_stat_label">Current Target</span>
+                                <span id="ct_ov_cal_target" class="ct_stat_value">--</span>
+                            </div>
+                            <div class="ct_stat_row">
+                                <span class="ct_stat_label">Utilization</span>
+                                <span id="ct_ov_cal_util" class="ct_stat_value">--</span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Qdrant Memory Card (Collapsible) -->
+                <div class="ct_overview_section">
+                    <div class="ct_memory_panel">
+                        <div class="ct_memory_panel_header" id="ct_ov_memory_toggle">
+                            <span>
+                                <i class="fa-solid fa-brain"></i>
+                                <span id="ct_ov_memory_count">Retrieved Memories (Last Generation)</span>
+                            </span>
+                            <i class="fa-solid fa-chevron-down ct_memory_toggle_icon"></i>
+                        </div>
+                        <div class="ct_memory_panel_content" id="ct_ov_memory_list" style="display: none;">
+                            <div class="ct_memory_empty">Generate a message to retrieve memories</div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Quick Actions Row -->
+                <div class="ct_overview_section">
+                    <h4><i class="fa-solid fa-bolt"></i> Quick Actions</h4>
+                    <div class="ct_quick_actions">
+                        <button id="ct_ov_reset" class="menu_button">
+                            <i class="fa-solid fa-rotate-left"></i>
+                            <span>Reset Truncation</span>
+                        </button>
+                        <button id="ct_ov_recalibrate" class="menu_button">
+                            <i class="fa-solid fa-sync"></i>
+                            <span>Recalibrate</span>
+                        </button>
+                        <button id="ct_ov_summarize" class="menu_button">
+                            <i class="fa-solid fa-compress"></i>
+                            <span>Summarize All</span>
+                        </button>
+                    </div>
+                </div>
+
+            </div>
+
             <!-- ==================== TRUNCATION TAB ==================== -->
-            <div class="ct_tab_content ct_tab_content_active" data-tab="truncation">
+            <div class="ct_tab_content" data-tab="truncation">
                 
                 <!-- Enable/Disable -->
                 <div class="flex-container flexFlowColumn">
@@ -33,8 +179,8 @@
 
                 <hr>
 
-                <!-- Truncation Settings -->
-                <h4>Truncation Settings</h4>
+                <!-- Target Settings (Target Size + Auto-Calibration) -->
+                <h4>Target Settings</h4>
                 
                 <div class="flex-container flexFlowColumn">
                     <label for="ct_target_size">
@@ -44,64 +190,6 @@
                     <small>Target prompt size in tokens. The extension learns and adapts over 2-3 generations to reach this target. Typical accuracy: 10-15% (conservative, under target).</small>
                 </div>
 
-                <div class="flex-container flexFlowColumn">
-                    <label for="ct_batch_size">
-                        <span>Batch Size (messages)</span>
-                    </label>
-                    <input id="ct_batch_size" class="text_pole" type="number" min="1" max="100" step="1" />
-                    <small>Number of messages to truncate at once. Larger batches are more cache-efficient.</small>
-                </div>
-
-                <div class="flex-container flexFlowColumn">
-                    <label for="ct_min_keep">
-                        <span>Minimum Messages to Keep</span>
-                    </label>
-                    <input id="ct_min_keep" class="text_pole" type="number" min="1" max="100" step="1" />
-                    <small>Minimum number of recent messages to always keep in context (safety limit).</small>
-                </div>
-
-                <hr>
-
-                <!-- Summarization Settings -->
-                <h4>Summarization Settings</h4>
-                
-                <div class="flex-container flexFlowColumn">
-                    <label class="checkbox_label" for="ct_auto_summarize">
-                        <input id="ct_auto_summarize" type="checkbox" />
-                        <span>Auto-Summarize Messages</span>
-                    </label>
-                    <small>Automatically summarize messages when they are truncated from context</small>
-                </div>
-
-                <div class="flex-container flexFlowColumn">
-                    <label for="ct_connection_profile">
-                        <span>Connection Profile</span>
-                    </label>
-                    <select id="ct_connection_profile" class="text_pole"></select>
-                    <small>Choose a different model for summarization. "Same as Current" uses your main model. Allows background summarization while roleplaying.</small>
-                </div>
-
-                <div class="flex-container flexFlowColumn">
-                    <label for="ct_max_words">
-                        <span>Maximum Words per Summary</span>
-                    </label>
-                    <input id="ct_max_words" class="text_pole" type="number" min="10" max="200" step="5" />
-                    <small>Maximum number of words allowed in each summary (default: 50)</small>
-                </div>
-
-                <div class="flex-container flexFlowColumn">
-                    <button id="ct_summarize_all" class="menu_button">
-                        <i class="fa-solid fa-compress"></i>
-                        <span>Summarize All Messages</span>
-                    </button>
-                    <small>Manually summarize all messages in the current chat that don't have summaries yet</small>
-                </div>
-
-                <hr>
-
-                <!-- Auto-Calibration Settings -->
-                <h4>Auto-Target Calibration</h4>
-                
                 <div class="flex-container flexFlowColumn">
                     <label class="checkbox_label" for="ct_auto_calibrate">
                         <input id="ct_auto_calibrate" type="checkbox" />
@@ -162,6 +250,64 @@
 
                 <hr>
 
+                <!-- Truncation Behavior -->
+                <h4>Truncation Behavior</h4>
+
+                <div class="flex-container flexFlowColumn">
+                    <label for="ct_batch_size">
+                        <span>Batch Size (messages)</span>
+                    </label>
+                    <input id="ct_batch_size" class="text_pole" type="number" min="1" max="100" step="1" />
+                    <small>Number of messages to truncate at once. Larger batches are more cache-efficient.</small>
+                </div>
+
+                <div class="flex-container flexFlowColumn">
+                    <label for="ct_min_keep">
+                        <span>Minimum Messages to Keep</span>
+                    </label>
+                    <input id="ct_min_keep" class="text_pole" type="number" min="1" max="100" step="1" />
+                    <small>Minimum number of recent messages to always keep in context (safety limit).</small>
+                </div>
+
+                <hr>
+
+                <!-- Summarization Settings -->
+                <h4>Summarization Settings</h4>
+                
+                <div class="flex-container flexFlowColumn">
+                    <label class="checkbox_label" for="ct_auto_summarize">
+                        <input id="ct_auto_summarize" type="checkbox" />
+                        <span>Auto-Summarize Messages</span>
+                    </label>
+                    <small>Automatically summarize messages when they are truncated from context</small>
+                </div>
+
+                <div class="flex-container flexFlowColumn">
+                    <label for="ct_connection_profile">
+                        <span>Connection Profile</span>
+                    </label>
+                    <select id="ct_connection_profile" class="text_pole"></select>
+                    <small>Choose a different model for summarization. "Same as Current" uses your main model. Allows background summarization while roleplaying.</small>
+                </div>
+
+                <div class="flex-container flexFlowColumn">
+                    <label for="ct_max_words">
+                        <span>Maximum Words per Summary</span>
+                    </label>
+                    <input id="ct_max_words" class="text_pole" type="number" min="10" max="200" step="5" />
+                    <small>Maximum number of words allowed in each summary (default: 50)</small>
+                </div>
+
+                <div class="flex-container flexFlowColumn">
+                    <button id="ct_summarize_all" class="menu_button">
+                        <i class="fa-solid fa-compress"></i>
+                        <span>Summarize All Messages</span>
+                    </button>
+                    <small>Manually summarize all messages in the current chat that don't have summaries yet</small>
+                </div>
+
+                <hr>
+
                 <!-- Status and Controls -->
                 <h4>Status and Controls</h4>
                 
@@ -182,13 +328,13 @@
 
                 <hr>
 
-                <!-- Debug Mode -->
+                <!-- Debug Mode - Truncation -->
                 <div class="flex-container flexFlowColumn">
-                    <label class="checkbox_label" for="ct_debug">
-                        <input id="ct_debug" type="checkbox" />
-                        <span>Debug Mode</span>
+                    <label class="checkbox_label" for="ct_debug_truncation">
+                        <input id="ct_debug_truncation" type="checkbox" />
+                        <span>Debug Mode (Truncation)</span>
                     </label>
-                    <small>Enable detailed console logging for troubleshooting</small>
+                    <small>Enable detailed console logging for truncation calculations, token estimates, and calibration</small>
                 </div>
 
             </div>
@@ -357,14 +503,6 @@
                 </div>
 
                 <div class="flex-container flexFlowColumn" style="margin-top: 10px;">
-                    <button id="ct_view_memories" class="menu_button">
-                        <i class="fa-solid fa-eye"></i>
-                        <span>View Memories</span>
-                    </button>
-                    <small>View stored memories for current character</small>
-                </div>
-
-                <div class="flex-container flexFlowColumn" style="margin-top: 10px;">
                     <button id="ct_delete_collection" class="menu_button menu_button_danger">
                         <i class="fa-solid fa-trash"></i>
                         <span>Delete Collection</span>
@@ -389,6 +527,17 @@
                         <!-- Memories will be populated here by JavaScript -->
                         <div class="ct_memory_empty">Generate a message to retrieve memories</div>
                     </div>
+                </div>
+
+                <hr>
+
+                <!-- Debug Mode - Qdrant -->
+                <div class="flex-container flexFlowColumn">
+                    <label class="checkbox_label" for="ct_debug_qdrant">
+                        <input id="ct_debug_qdrant" type="checkbox" />
+                        <span>Debug Mode (Qdrant)</span>
+                    </label>
+                    <small>Enable console logging for Qdrant operations, embeddings, and memory retrieval</small>
                 </div>
 
             </div>
@@ -448,6 +597,17 @@
                         3. Summaries can optionally be indexed to Qdrant for semantic search<br>
                         4. Memory-aware summarization uses long-term context for better summaries<br>
                     </small>
+                </div>
+
+                <hr>
+
+                <!-- Debug Mode - Synergy -->
+                <div class="flex-container flexFlowColumn">
+                    <label class="checkbox_label" for="ct_debug_synergy">
+                        <input id="ct_debug_synergy" type="checkbox" />
+                        <span>Debug Mode (Synergy)</span>
+                    </label>
+                    <small>Enable console logging for synergy features (token accounting, summary-as-chunk)</small>
                 </div>
 
             </div>

@@ -392,3 +392,220 @@
     border-radius: 4px;
     margin-top: 6px;
 }
+
+/* ==================== DISABLED INPUT STATE ==================== */
+.ct_disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+    background: var(--black50a) !important;
+}
+
+/* ==================== OVERVIEW TAB ==================== */
+.ct_overview_section {
+    margin-bottom: 15px;
+}
+
+.ct_overview_section h4 {
+    margin: 0 0 10px 0;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 0.95em;
+}
+
+.ct_overview_section h4 i {
+    opacity: 0.8;
+}
+
+/* ==================== CONTEXT GAUGE ==================== */
+.ct_gauge_container {
+    background: var(--black30a);
+    border-radius: 8px;
+    padding: 12px;
+}
+
+.ct_gauge_bar {
+    height: 24px;
+    background: var(--black50a);
+    border-radius: 12px;
+    overflow: hidden;
+    position: relative;
+}
+
+.ct_gauge_fill {
+    height: 100%;
+    transition: width 0.3s ease, background-color 0.3s ease;
+    border-radius: 12px;
+}
+
+.ct_gauge_green {
+    background: linear-gradient(90deg, #2d5016, #4caf50);
+}
+
+.ct_gauge_yellow {
+    background: linear-gradient(90deg, #4a4a00, #ffcc00);
+}
+
+.ct_gauge_red {
+    background: linear-gradient(90deg, #4a0000, #f44336);
+}
+
+.ct_gauge_markers {
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    pointer-events: none;
+}
+
+.ct_gauge_marker {
+    position: absolute;
+    top: 50%;
+    transform: translateX(-50%) translateY(-50%);
+    font-size: 0.7em;
+    opacity: 0.5;
+    color: #fff;
+    text-shadow: 0 0 3px rgba(0,0,0,0.8);
+}
+
+.ct_gauge_labels {
+    display: flex;
+    justify-content: space-between;
+    margin-top: 8px;
+    font-size: 0.9em;
+}
+
+.ct_gauge_labels span:first-child {
+    font-weight: bold;
+    font-size: 1.2em;
+}
+
+.ct_gauge_labels span:last-child {
+    opacity: 0.7;
+}
+
+/* ==================== CONTEXT BREAKDOWN BAR ==================== */
+.ct_breakdown_container {
+    background: var(--black30a);
+    border-radius: 8px;
+    padding: 12px;
+}
+
+.ct_breakdown_bar {
+    height: 20px;
+    background: var(--black50a);
+    border-radius: 10px;
+    overflow: hidden;
+    display: flex;
+}
+
+.ct_breakdown_segment {
+    height: 100%;
+    transition: width 0.3s ease;
+}
+
+.ct_breakdown_chat {
+    background: #4fc3f7;
+}
+
+.ct_breakdown_system {
+    background: #81c784;
+}
+
+.ct_breakdown_summaries {
+    background: #ffb74d;
+}
+
+.ct_breakdown_qdrant {
+    background: #ce93d8;
+}
+
+.ct_breakdown_free {
+    background: var(--black30a);
+}
+
+.ct_breakdown_legend {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 12px;
+    margin-top: 10px;
+    font-size: 0.85em;
+}
+
+.ct_legend_item {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+}
+
+.ct_legend_color {
+    width: 12px;
+    height: 12px;
+    border-radius: 3px;
+}
+
+/* ==================== STATS CARDS GRID ==================== */
+.ct_stats_grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+    gap: 12px;
+    margin-bottom: 15px;
+}
+
+.ct_stats_card {
+    background: var(--black30a);
+    border: 1px solid var(--SmartThemeBorderColor);
+    border-radius: 8px;
+    overflow: hidden;
+}
+
+.ct_card_header {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 10px 12px;
+    background: var(--black50a);
+    font-weight: bold;
+    font-size: 0.9em;
+}
+
+.ct_card_header i {
+    opacity: 0.8;
+}
+
+.ct_card_content {
+    padding: 10px 12px;
+}
+
+.ct_stat_row {
+    display: flex;
+    justify-content: space-between;
+    padding: 4px 0;
+    border-bottom: 1px solid var(--SmartThemeBorderColor);
+    font-size: 0.85em;
+}
+
+.ct_stat_row:last-child {
+    border-bottom: none;
+}
+
+.ct_stat_label {
+    opacity: 0.7;
+}
+
+.ct_stat_value {
+    font-weight: bold;
+}
+
+/* ==================== QUICK ACTIONS ==================== */
+.ct_quick_actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+}
+
+.ct_quick_actions .menu_button {
+    flex: 1;
+    min-width: 120px;
+}

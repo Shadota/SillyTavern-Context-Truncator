@@ -121,7 +121,10 @@ If something is not stated here or in recent chat, do not invent details. If sum
     injection_depth: 2,
     injection_role: extension_prompt_roles.SYSTEM,
     
-    debug_mode: false,
+    // Per-module debug settings
+    debug_truncation: false,
+    debug_qdrant: false,
+    debug_synergy: false,
     
     // ==================== QDRANT SETTINGS ====================
     qdrant_enabled: false,
@@ -173,8 +176,28 @@ function log(...args) {
     console.log(`[${MODULE_NAME_FANCY}]`, ...args);
 }
 
+// Module-specific debug functions
+function debug_trunc(...args) {
+    if (get_settings('debug_truncation')) {
+        console.log(`[${MODULE_NAME_FANCY}][Truncation]`, ...args);
+    }
+}
+
+function debug_qdrant(...args) {
+    if (get_settings('debug_qdrant')) {
+        console.log(`[${MODULE_NAME_FANCY}][Qdrant]`, ...args);
+    }
+}
+
+function debug_synergy(...args) {
+    if (get_settings('debug_synergy')) {
+        console.log(`[${MODULE_NAME_FANCY}][Synergy]`, ...args);
+    }
+}
+
+// Legacy debug function - routes to truncation debug for backward compatibility
 function debug(...args) {
-    if (get_settings('debug_mode')) {
+    if (get_settings('debug_truncation') || get_settings('debug_qdrant') || get_settings('debug_synergy')) {
         console.log(`[${MODULE_NAME_FANCY}][DEBUG]`, ...args);
     }
 }
@@ -488,13 +511,24 @@ function calculate_truncation_index() {
     let targetSize = get_settings('target_context_size');
     const batchSize = get_settings('batch_size');
     const minKeep = get_settings('min_messages_to_keep');
+    const maxContext = getMaxContextSize();
+    
+    debug_trunc(`═══════════════════════════════════════════════════════════════`);
+    debug_trunc(`═══ TRUNCATION CALCULATION START ═══`);
+    debug_trunc(`  Chat length: ${chat.length} messages`);
+    debug_trunc(`  Current truncation index: ${TRUNCATION_INDEX || 0}`);
+    debug_trunc(`  Target size: ${targetSize} tokens`);
+    debug_trunc(`  Max context: ${maxContext} tokens`);
+    debug_trunc(`  Batch size: ${batchSize}`);
+    debug_trunc(`  Min messages to keep: ${minKeep}`);
     
     // SYNERGY: Account for Qdrant tokens in target size
     if (get_settings('qdrant_enabled') && get_settings('account_qdrant_tokens')) {
         const qdrantTokens = get_qdrant_injection_tokens();
         if (qdrantTokens > 0) {
+            const originalTarget = targetSize;
             targetSize = targetSize - qdrantTokens;
-            debug(`Synergy: Adjusted target from ${get_settings('target_context_size')} to ${targetSize} (Qdrant: ${qdrantTokens} tokens)`);
+            debug_synergy(`Adjusted target from ${originalTarget} to ${targetSize} (Qdrant: ${qdrantTokens} tokens)`);
         }
     }
     
@@ -502,17 +536,20 @@ function calculate_truncation_index() {
     const currentPromptSize = CURRENT_CONTEXT_SIZE;
     
     if (currentPromptSize === 0) {
-        debug('No context size available, cannot calculate truncation');
+        debug_trunc('No context size available, cannot calculate truncation');
+        debug_trunc(`═══ TRUNCATION CALCULATION END (no data) ═══`);
         return 0;
     }
     
-    debug(`Calculating truncation index:`);
-    debug(`  Current full prompt: ${currentPromptSize} tokens`);
-    debug(`  Target full: ${targetSize} tokens`);
+    debug_trunc(`  `);
+    debug_trunc(`  === CONTEXT ANALYSIS ===`);
+    debug_trunc(`  Current full prompt: ${currentPromptSize} tokens`);
+    debug_trunc(`  Target full: ${targetSize} tokens`);
+    debug_trunc(`  Over target by: ${currentPromptSize - targetSize} tokens`);
     
     // If we're under target, no truncation needed
     if (currentPromptSize <= targetSize) {
-        debug('Under target, no truncation needed');
+        debug_trunc('Under target, no truncation needed');
         return 0;
     }
     
@@ -542,11 +579,15 @@ function calculate_truncation_index() {
     let promptChatTokens = 0;
     let nonChatBudget;
     
+    debug_trunc(`  `);
+    debug_trunc(`  === PROMPT ANALYSIS ===`);
+    
     if (!last_raw_prompt) {
         // No raw prompt - estimate non-chat budget as 15% of current prompt size
         // This is a rough estimate for the first generation only
         nonChatBudget = Math.floor(currentPromptSize * 0.15);
-        debug(`  No raw prompt available - using 15% estimate for non-chat budget: ${nonChatBudget}`);
+        debug_trunc(`  No raw prompt available - using 15% estimate`);
+        debug_trunc(`  Non-chat budget (estimated): ${nonChatBudget} tokens`);
     } else {
         // Have raw prompt - calculate accurately
         totalPromptTokens = count_tokens(last_raw_prompt);
@@ -554,13 +595,14 @@ function calculate_truncation_index() {
         let segments = get_prompt_chat_segments_from_raw(last_raw_prompt);
         if (segments && segments.length > 0) {
             promptChatTokens = segments.reduce((sum, seg) => sum + seg.tokenCount, 0);
+            debug_trunc(`  Chat segments found: ${segments.length}`);
         }
         
         nonChatBudget = Math.max(totalPromptTokens - promptChatTokens, 0);
         
-        debug(`  Total prompt tokens: ${totalPromptTokens}`);
-        debug(`  Prompt chat tokens: ${promptChatTokens}`);
-        debug(`  Non-chat budget: ${nonChatBudget}`);
+        debug_trunc(`  Raw prompt size: ${totalPromptTokens} tokens`);
+        debug_trunc(`  Chat tokens (from segments): ${promptChatTokens} tokens`);
+        debug_trunc(`  Non-chat budget: ${nonChatBudget} tokens`);
     }
     
     // Track token map usage
@@ -615,8 +657,12 @@ function calculate_truncation_index() {
     // Current chat size
     let currentChatSize = estimateChatSize(currentIndex);
     
-    debug(`  Current chat size: ${currentChatSize}`);
-    debug(`  Current total: ${currentChatSize + nonChatBudget}`);
+    debug_trunc(`  `);
+    debug_trunc(`  === CHAT SIZE ESTIMATION ===`);
+    debug_trunc(`  Starting index: ${currentIndex}`);
+    debug_trunc(`  Correction factor: ${CHAT_TOKEN_CORRECTION_FACTOR.toFixed(3)}`);
+    debug_trunc(`  Estimated chat size: ${currentChatSize} tokens`);
+    debug_trunc(`  Total estimated: ${currentChatSize + nonChatBudget} tokens`);
     
     // If we're over target, truncate in batches
     if (currentChatSize + nonChatBudget > targetSize) {
@@ -658,10 +704,18 @@ function calculate_truncation_index() {
     const predictedChatSize = estimateChatSize(finalIndex);
     const predictedTotal = predictedChatSize + nonChatBudget;
     
-    debug(`  Final truncation index: ${finalIndex}`);
-    debug(`  Final chat size: ${predictedChatSize}`);
-    debug(`  Final total: ${predictedTotal}`);
-    debug(`  Token map: ${map_hits} hits, ${map_misses} misses (${message_token_map ? message_token_map.size : 0} entries)`);
+    debug_trunc(`  `);
+    debug_trunc(`  === MESSAGE TOKEN MAP ===`);
+    debug_trunc(`  Map stats: ${map_hits} hits, ${map_misses} misses (${message_token_map ? message_token_map.size : 0} entries)`);
+    
+    debug_trunc(`  `);
+    debug_trunc(`  === FINAL RESULT ===`);
+    debug_trunc(`  New truncation index: ${finalIndex} (was ${currentIndex}, ${finalIndex > currentIndex ? '+' + (finalIndex - currentIndex) + ' messages excluded' : 'no change'})`);
+    debug_trunc(`  Predicted chat size: ${predictedChatSize} tokens`);
+    debug_trunc(`  Predicted total: ${predictedTotal} tokens`);
+    debug_trunc(`  ${predictedTotal <= targetSize ? 'Under' : 'Over'} target by: ${Math.abs(predictedTotal - targetSize)} tokens`);
+    debug_trunc(`═══ TRUNCATION CALCULATION END ═══`);
+    debug_trunc(`═══════════════════════════════════════════════════════════════`);
     
     // Store predictions for comparison with actual results
     LAST_PREDICTED_SIZE = predictedTotal;
@@ -791,13 +845,25 @@ function refresh_memory() {
         return;
     }
     
-    debug("Refreshing memory");
+    debug_trunc("Refreshing memory");
     
     // Update which messages to keep/exclude
     update_message_inclusion_flags();
     
     // Get summary injection text
     const injection = get_summary_injection();
+    const summaryIndexes = collect_summary_indexes();
+    const summaryTokens = injection ? count_tokens(injection) : 0;
+    
+    // Log summary injection details
+    if (summaryIndexes.length > 0) {
+        debug_trunc(`═══ SUMMARY INJECTION ═══`);
+        debug_trunc(`  Messages with summaries: ${summaryIndexes.length}`);
+        debug_trunc(`  Lagging messages: ${TRUNCATION_INDEX || 0}`);
+        debug_trunc(`  Summary tokens: ${summaryTokens}`);
+        debug_trunc(`  Injection depth: ${get_settings('injection_depth')}`);
+        debug_trunc(`═════════════════════════`);
+    }
     
     // Inject summaries
     ctx.setExtensionPrompt(
@@ -809,7 +875,7 @@ function refresh_memory() {
         get_settings('injection_role')
     );
     
-    debug(`Injected ${collect_summary_indexes().length} summaries`);
+    debug_trunc(`Injected ${summaryIndexes.length} summaries (${summaryTokens} tokens)`);
 }
 
 // Global variable to store context size from intercept
@@ -909,25 +975,30 @@ function update_status_display() {
         
         // Calculate correction factor: actual / predicted
         const newCorrectionFactor = actualChatTokens / LAST_PREDICTED_CHAT_SIZE;
+        const oldCorrectionFactor = CHAT_TOKEN_CORRECTION_FACTOR;
         
         // Smooth the correction factor (exponential moving average with alpha=0.3)
         // This prevents wild swings from a single bad estimate
         CHAT_TOKEN_CORRECTION_FACTOR = (0.3 * newCorrectionFactor) + (0.7 * CHAT_TOKEN_CORRECTION_FACTOR);
         
-        if (get_settings('debug_mode')) {
-            debug('=== PREDICTION vs ACTUAL ANALYSIS ===');
-            debug(`  PREDICTED total: ${LAST_PREDICTED_SIZE} tokens`);
-            debug(`  PREDICTED chat: ${LAST_PREDICTED_CHAT_SIZE} tokens`);
-            debug(`  PREDICTED non-chat: ${LAST_PREDICTED_NON_CHAT_SIZE} tokens`);
-            debug(`  ACTUAL total: ${actualSize} tokens`);
-            debug(`  DIFFERENCE: ${LAST_PREDICTED_SIZE - actualSize} tokens (${((LAST_PREDICTED_SIZE - actualSize) / LAST_PREDICTED_SIZE * 100).toFixed(1)}%)`);
-            debug(`  ACTUAL chat: ${actualChatTokens} tokens`);
-            debug(`  ACTUAL non-chat: ${actualNonChatTokens} tokens`);
-            debug(`  Chat difference: ${LAST_PREDICTED_CHAT_SIZE - actualChatTokens} tokens`);
-            debug(`  Non-chat difference: ${LAST_PREDICTED_NON_CHAT_SIZE - actualNonChatTokens} tokens`);
-            debug(`  New correction factor: ${newCorrectionFactor.toFixed(3)}`);
-            debug(`  Smoothed correction factor: ${CHAT_TOKEN_CORRECTION_FACTOR.toFixed(3)}`);
-        }
+        // Log correction factor updates
+        debug_trunc(`═══════════════════════════════════════════════════════════════`);
+        debug_trunc(`═══ CORRECTION FACTOR UPDATE ═══`);
+        debug_trunc(`  PREDICTED total: ${LAST_PREDICTED_SIZE} tokens`);
+        debug_trunc(`  ACTUAL total: ${actualSize} tokens`);
+        debug_trunc(`  Difference: ${actualSize - LAST_PREDICTED_SIZE} tokens (${((actualSize - LAST_PREDICTED_SIZE) / LAST_PREDICTED_SIZE * 100).toFixed(1)}%)`);
+        debug_trunc(`  `);
+        debug_trunc(`  PREDICTED chat: ${LAST_PREDICTED_CHAT_SIZE} tokens`);
+        debug_trunc(`  ACTUAL chat: ${actualChatTokens} tokens`);
+        debug_trunc(`  Chat difference: ${actualChatTokens - LAST_PREDICTED_CHAT_SIZE} tokens (${((actualChatTokens - LAST_PREDICTED_CHAT_SIZE) / LAST_PREDICTED_CHAT_SIZE * 100).toFixed(1)}%)`);
+        debug_trunc(`  `);
+        debug_trunc(`  PREDICTED non-chat: ${LAST_PREDICTED_NON_CHAT_SIZE} tokens`);
+        debug_trunc(`  ACTUAL non-chat: ${actualNonChatTokens} tokens`);
+        debug_trunc(`  Non-chat difference: ${actualNonChatTokens - LAST_PREDICTED_NON_CHAT_SIZE} tokens`);
+        debug_trunc(`  `);
+        debug_trunc(`  New correction factor: ${newCorrectionFactor.toFixed(3)}`);
+        debug_trunc(`  Smoothed factor: ${CHAT_TOKEN_CORRECTION_FACTOR.toFixed(3)} (was ${oldCorrectionFactor.toFixed(3)})`);
+        debug_trunc(`═══════════════════════════════════════════════════════════════`);
     }
     
     // Determine color based on error percentage
@@ -970,6 +1041,9 @@ function update_status_display() {
     
     // Update memory display
     update_memory_display();
+    
+    // Update overview tab
+    update_overview_tab();
 }
 
 // ==================== AUTO-CALIBRATION STATE MACHINE ====================
@@ -999,78 +1073,96 @@ function calibrate_target_size(actualSize) {
     const currentUtilization = actualSize / maxContext;
     const deviation = Math.abs(currentUtilization - targetUtilization);
     
-    debug(`=== CALIBRATION STATE MACHINE ===`);
-    debug(`  State: ${CALIBRATION_STATE}`);
-    debug(`  Max Context: ${maxContext}`);
-    debug(`  Actual Size: ${actualSize}`);
-    debug(`  Current Utilization: ${(currentUtilization * 100).toFixed(1)}%`);
-    debug(`  Target Utilization: ${(targetUtilization * 100).toFixed(1)}%`);
-    debug(`  Deviation: ${(deviation * 100).toFixed(1)}%`);
-    debug(`  Tolerance: ${(tolerance * 100).toFixed(1)}%`);
+    debug_trunc(`═══════════════════════════════════════════════════════════════`);
+    debug_trunc(`═══ CALIBRATION STATE MACHINE ═══`);
+    debug_trunc(`  Current state: ${CALIBRATION_STATE}`);
+    debug_trunc(`  Max context: ${maxContext} tokens`);
+    debug_trunc(`  Target utilization: ${(targetUtilization * 100).toFixed(1)}%`);
+    debug_trunc(`  Tolerance: ${(tolerance * 100).toFixed(1)}%`);
+    debug_trunc(`  `);
+    debug_trunc(`  Actual prompt: ${actualSize} tokens`);
+    debug_trunc(`  Actual utilization: ${(currentUtilization * 100).toFixed(1)}%`);
+    debug_trunc(`  Deviation from target: ${(deviation * 100).toFixed(1)}%`);
+    debug_trunc(`  Within tolerance: ${deviation <= tolerance ? 'YES' : 'NO'}`);
     
     switch (CALIBRATION_STATE) {
         case 'INITIAL_TRAINING':
             // Wait for correction factor to stabilize
             GENERATION_COUNT++;
-            debug(`  Training generation ${GENERATION_COUNT}/${TRAINING_GENERATIONS}`);
+            debug_trunc(`  `);
+            debug_trunc(`  Training generation ${GENERATION_COUNT}/${TRAINING_GENERATIONS}`);
             
             if (GENERATION_COUNT >= TRAINING_GENERATIONS) {
                 CALIBRATION_STATE = 'CALIBRATING';
                 GENERATION_COUNT = 0;
-                debug(`  Transitioning to CALIBRATING`);
+                debug_trunc(`  → Transitioning to CALIBRATING`);
                 
                 // Calculate initial target based on learned correction factor
                 calculate_calibrated_target(maxContext, targetUtilization);
+            } else {
+                debug_trunc(`  → Remaining in INITIAL_TRAINING`);
             }
             break;
             
         case 'CALIBRATING':
             // Apply calibration and check if we're within tolerance
+            debug_trunc(`  `);
             if (deviation <= tolerance) {
                 STABLE_COUNT++;
-                debug(`  Within tolerance, stable count: ${STABLE_COUNT}/${STABLE_THRESHOLD}`);
+                debug_trunc(`  Stable count: ${STABLE_COUNT}/${STABLE_THRESHOLD}`);
                 
                 if (STABLE_COUNT >= STABLE_THRESHOLD) {
                     CALIBRATION_STATE = 'STABLE';
-                    debug(`  Transitioning to STABLE`);
+                    debug_trunc(`  → Transitioning to STABLE`);
                     toastr.success(`Calibration complete! Target: ${get_settings('target_context_size').toLocaleString()} tokens`, MODULE_NAME_FANCY);
+                } else {
+                    debug_trunc(`  → Remaining in CALIBRATING`);
                 }
             } else {
                 STABLE_COUNT = 0;
-                debug(`  Outside tolerance, recalculating...`);
+                debug_trunc(`  Outside tolerance, recalculating...`);
                 
                 // Recalculate target
                 calculate_calibrated_target(maxContext, targetUtilization);
+                debug_trunc(`  → Remaining in CALIBRATING`);
             }
             break;
             
         case 'RETRAINING':
             // Similar to initial training but after destabilization
             RETRAIN_COUNT++;
-            debug(`  Retraining generation ${RETRAIN_COUNT}/${TRAINING_GENERATIONS}`);
+            debug_trunc(`  `);
+            debug_trunc(`  Retraining generation ${RETRAIN_COUNT}/${TRAINING_GENERATIONS}`);
             
             if (RETRAIN_COUNT >= TRAINING_GENERATIONS) {
                 CALIBRATION_STATE = 'CALIBRATING';
                 RETRAIN_COUNT = 0;
                 STABLE_COUNT = 0;
-                debug(`  Transitioning back to CALIBRATING`);
+                debug_trunc(`  → Transitioning back to CALIBRATING`);
                 
                 calculate_calibrated_target(maxContext, targetUtilization);
+            } else {
+                debug_trunc(`  → Remaining in RETRAINING`);
             }
             break;
             
         case 'STABLE':
             // Monitor for destabilization
+            debug_trunc(`  `);
             if (deviation > tolerance * 1.5) {  // Use 1.5x tolerance to avoid bouncing
-                debug(`  Destabilized! Deviation ${(deviation * 100).toFixed(1)}% > ${(tolerance * 1.5 * 100).toFixed(1)}%`);
+                debug_trunc(`  Destabilized! Deviation ${(deviation * 100).toFixed(1)}% > ${(tolerance * 1.5 * 100).toFixed(1)}%`);
+                debug_trunc(`  → Transitioning to RETRAINING`);
                 CALIBRATION_STATE = 'RETRAINING';
                 RETRAIN_COUNT = 0;
                 STABLE_COUNT = 0;
                 toastr.warning('Calibration destabilized - retraining...', MODULE_NAME_FANCY);
+            } else {
+                debug_trunc(`  → Remaining in STABLE (monitoring)`);
             }
             break;
     }
     
+    debug_trunc(`═══════════════════════════════════════════════════════════════`);
     update_calibration_ui();
 }
 
@@ -1088,11 +1180,11 @@ function calculate_calibrated_target(maxContext, targetUtilization) {
     const maxTarget = Math.floor(maxContext * 0.95); // At most 95% of max
     const finalTarget = Math.max(minTarget, Math.min(maxTarget, adjustedTarget));
     
-    debug(`  Calculating calibrated target:`);
-    debug(`    Ideal target: ${idealTarget}`);
-    debug(`    Correction factor: ${CHAT_TOKEN_CORRECTION_FACTOR.toFixed(3)}`);
-    debug(`    Adjusted target: ${adjustedTarget}`);
-    debug(`    Final target: ${finalTarget}`);
+    debug_trunc(`  Calculating calibrated target:`);
+    debug_trunc(`    Ideal target: ${idealTarget}`);
+    debug_trunc(`    Correction factor: ${CHAT_TOKEN_CORRECTION_FACTOR.toFixed(3)}`);
+    debug_trunc(`    Adjusted target: ${adjustedTarget}`);
+    debug_trunc(`    Final target: ${finalTarget}`);
     
     // Only update if significantly different (>2% change)
     const currentTarget = get_settings('target_context_size');
@@ -1105,9 +1197,9 @@ function calculate_calibrated_target(maxContext, targetUtilization) {
         // Reset truncation index since target changed
         reset_truncation_index();
         
-        debug(`  Updated target from ${currentTarget} to ${finalTarget}`);
+        debug_trunc(`  Updated target from ${currentTarget} to ${finalTarget}`);
     } else {
-        debug(`  Target change too small (${(changePct * 100).toFixed(1)}%), keeping ${currentTarget}`);
+        debug_trunc(`  Target change too small (${(changePct * 100).toFixed(1)}%), keeping ${currentTarget}`);
     }
 }
 
@@ -1157,6 +1249,183 @@ function update_calibration_ui() {
         $utilization.text(`${utilization}%`);
     } else {
         $utilization.text('-');
+    }
+}
+
+// ==================== OVERVIEW TAB FUNCTIONS ====================
+
+// Update the Overview tab with current stats
+function update_overview_tab() {
+    const last_raw_prompt = get_last_prompt_raw();
+    const maxContext = getMaxContextSize();
+    
+    // Update Gauge
+    if (last_raw_prompt) {
+        const actualSize = count_tokens(last_raw_prompt);
+        const utilization = (actualSize / maxContext * 100);
+        
+        // Update gauge fill
+        const $gaugeFill = $('#ct_gauge_fill');
+        $gaugeFill.css('width', `${Math.min(utilization, 100)}%`);
+        
+        // Update gauge color based on utilization
+        $gaugeFill.removeClass('ct_gauge_green ct_gauge_yellow ct_gauge_red');
+        if (utilization <= 80) {
+            $gaugeFill.addClass('ct_gauge_green');
+        } else if (utilization <= 90) {
+            $gaugeFill.addClass('ct_gauge_yellow');
+        } else {
+            $gaugeFill.addClass('ct_gauge_red');
+        }
+        
+        // Update labels
+        $('#ct_gauge_value').text(`${utilization.toFixed(1)}%`);
+        $('#ct_gauge_max').text(`of ${maxContext.toLocaleString()} tokens`);
+        
+        // Update Breakdown Bar
+        const segments = get_prompt_chat_segments_from_raw(last_raw_prompt);
+        const chatTokens = segments ? segments.reduce((sum, seg) => sum + seg.tokenCount, 0) : 0;
+        const systemTokens = actualSize - chatTokens;  // Rough estimate
+        const summaryTokens = count_tokens(get_summary_injection());
+        const qdrantTokens = get_qdrant_injection_tokens();
+        const freeTokens = Math.max(0, maxContext - actualSize);
+        
+        const chatPct = (chatTokens / maxContext * 100);
+        const systemPct = (systemTokens / maxContext * 100);
+        const summaryPct = (summaryTokens / maxContext * 100);
+        const qdrantPct = (qdrantTokens / maxContext * 100);
+        const freePct = (freeTokens / maxContext * 100);
+        
+        $('#ct_breakdown_chat').css('width', `${chatPct}%`);
+        $('#ct_breakdown_system').css('width', `${systemPct}%`);
+        $('#ct_breakdown_summaries').css('width', `${summaryPct}%`);
+        $('#ct_breakdown_qdrant').css('width', `${qdrantPct}%`);
+        $('#ct_breakdown_free').css('width', `${freePct}%`);
+        
+        // Update Truncation Stats Card
+        const targetSize = get_settings('target_context_size');
+        const difference = actualSize - targetSize;
+        const percentError = Math.abs((difference / targetSize) * 100);
+        
+        $('#ct_ov_actual_size').text(`${actualSize.toLocaleString()} tokens`);
+        $('#ct_ov_target_size').text(`${targetSize.toLocaleString()} tokens`);
+        $('#ct_ov_difference').text(`${difference > 0 ? '+' : ''}${difference.toLocaleString()} tokens`);
+        $('#ct_ov_error').text(`${percentError.toFixed(1)}%`);
+        $('#ct_ov_trunc_index').text(TRUNCATION_INDEX !== null ? TRUNCATION_INDEX : '--');
+        $('#ct_ov_correction').text(CHAT_TOKEN_CORRECTION_FACTOR.toFixed(3));
+    } else {
+        // No data available
+        $('#ct_gauge_fill').css('width', '0%');
+        $('#ct_gauge_value').text('--%');
+        $('#ct_gauge_max').text(`of ${maxContext.toLocaleString()} tokens`);
+    }
+    
+    // Update Calibration Status Card
+    if (get_settings('auto_calibrate_target')) {
+        let phaseText = CALIBRATION_STATE;
+        let phaseClass = '';
+        let progressText = '--';
+        
+        switch (CALIBRATION_STATE) {
+            case 'INITIAL_TRAINING':
+                phaseText = 'Initial Training';
+                phaseClass = 'ct_phase_training';
+                progressText = `${GENERATION_COUNT}/${TRAINING_GENERATIONS}`;
+                break;
+            case 'CALIBRATING':
+                phaseText = 'Calibrating';
+                phaseClass = 'ct_phase_calibrating';
+                progressText = `${STABLE_COUNT}/${STABLE_THRESHOLD} stable`;
+                break;
+            case 'RETRAINING':
+                phaseText = 'Retraining';
+                phaseClass = 'ct_phase_retraining';
+                progressText = `${RETRAIN_COUNT}/${TRAINING_GENERATIONS}`;
+                break;
+            case 'STABLE':
+                phaseText = 'Stable ✓';
+                phaseClass = 'ct_phase_stable';
+                progressText = 'Monitoring';
+                break;
+        }
+        
+        $('#ct_ov_cal_phase').text(phaseText).removeClass('ct_phase_training ct_phase_calibrating ct_phase_retraining ct_phase_stable').addClass(phaseClass);
+        $('#ct_ov_cal_progress').text(progressText);
+        $('#ct_ov_cal_target').text(`${get_settings('target_context_size').toLocaleString()} tokens`);
+        
+        if (LAST_ACTUAL_PROMPT_SIZE > 0) {
+            const utilization = (LAST_ACTUAL_PROMPT_SIZE / maxContext * 100).toFixed(1);
+            $('#ct_ov_cal_util').text(`${utilization}%`);
+        } else {
+            $('#ct_ov_cal_util').text('-');
+        }
+    } else {
+        $('#ct_ov_cal_phase').text('Disabled').removeClass('ct_phase_training ct_phase_calibrating ct_phase_retraining ct_phase_stable');
+        $('#ct_ov_cal_progress').text('--');
+        $('#ct_ov_cal_target').text(`${get_settings('target_context_size').toLocaleString()} tokens`);
+        $('#ct_ov_cal_util').text('-');
+    }
+    
+    // Update Qdrant Memory Section in Overview
+    update_overview_memories();
+}
+
+// Update the memory display in Overview tab
+function update_overview_memories() {
+    const $count = $('#ct_ov_memory_count');
+    const $list = $('#ct_ov_memory_list');
+    
+    if (!get_settings('qdrant_enabled') || CURRENT_QDRANT_MEMORIES.length === 0) {
+        $count.text('Retrieved Memories (0)');
+        $list.html('<div class="ct_memory_empty">Generate a message to retrieve memories</div>');
+        return;
+    }
+    
+    const memories = CURRENT_QDRANT_MEMORIES;
+    $count.text(`Retrieved Memories (${memories.length})`);
+    
+    // Build memory list HTML (reuse from update_memory_display)
+    let html = '';
+    for (let i = 0; i < memories.length; i++) {
+        const memory = memories[i];
+        const score = memory.score;
+        const scorePercent = (score * 100).toFixed(1);
+        
+        let scoreClass = 'ct_score_low';
+        if (score >= 0.7) scoreClass = 'ct_score_high';
+        else if (score >= 0.5) scoreClass = 'ct_score_medium';
+        
+        const text = memory.text.length > 500
+            ? memory.text.substring(0, 500) + '...'
+            : memory.text;
+        
+        html += `
+            <div class="ct_memory_item">
+                <div class="ct_memory_item_header">
+                    <span class="ct_memory_meta">Memory ${i + 1} • Messages ${memory.firstIndex}-${memory.lastIndex}</span>
+                    <span class="ct_memory_score ${scoreClass}">${scorePercent}%</span>
+                </div>
+                <div class="ct_memory_text">${escapeHtml(text)}</div>
+            </div>
+        `;
+    }
+    
+    $list.html(html);
+}
+
+// Update target size input state based on auto-calibration setting
+function update_target_size_state() {
+    const autoCalibrate = get_settings('auto_calibrate_target');
+    const $targetSize = $('#ct_target_size');
+    
+    if (autoCalibrate) {
+        $targetSize.prop('disabled', true);
+        $targetSize.addClass('ct_disabled');
+        $targetSize.attr('title', 'Disabled when Auto-Calibration is enabled');
+    } else {
+        $targetSize.prop('disabled', false);
+        $targetSize.removeClass('ct_disabled');
+        $targetSize.attr('title', '');
     }
 }
 
@@ -1450,7 +1719,9 @@ function initialize_ui_listeners() {
     bind_setting('#ct_auto_summarize', 'auto_summarize', 'boolean');
     bind_setting('#ct_connection_profile', 'connection_profile', 'text');
     bind_setting('#ct_max_words', 'summary_max_words', 'number');
-    bind_setting('#ct_debug', 'debug_mode', 'boolean');
+    
+    // Per-module debug settings
+    bind_setting('#ct_debug_truncation', 'debug_truncation', 'boolean');
     
     // Batch size - reset truncation when changed
     $('#ct_batch_size').val(get_settings('batch_size'));
@@ -1501,11 +1772,15 @@ function initialize_ui_listeners() {
         const value = $(this).prop('checked');
         set_settings('auto_calibrate_target', value);
         update_calibration_ui();
+        update_target_size_state();
         
         if (value) {
             toastr.info('Auto-calibration enabled - will start training on next generation', MODULE_NAME_FANCY);
         }
     });
+    
+    // Initialize target size state based on auto-calibration setting
+    update_target_size_state();
     
     // Target utilization slider
     bind_range_setting_percent('#ct_target_utilization', 'target_utilization', '#ct_target_utilization_display');
@@ -1550,10 +1825,60 @@ function initialize_ui_listeners() {
     // Memory panel toggle
     initialize_memory_panel_toggle();
     
+    // Qdrant debug setting
+    bind_setting('#ct_debug_qdrant', 'debug_qdrant', 'boolean');
+    
     // ==================== SYNERGY SETTINGS ====================
     bind_setting('#ct_use_summaries_for_qdrant', 'use_summaries_for_qdrant', 'boolean');
     bind_setting('#ct_memory_aware_summaries', 'memory_aware_summaries', 'boolean');
     bind_setting('#ct_account_qdrant_tokens', 'account_qdrant_tokens', 'boolean');
+    
+    // Synergy debug setting
+    bind_setting('#ct_debug_synergy', 'debug_synergy', 'boolean');
+    
+    // ==================== OVERVIEW TAB QUICK ACTIONS ====================
+    $('#ct_ov_reset').on('click', () => {
+        reset_truncation_index();
+        toastr.info('Truncation index reset', MODULE_NAME_FANCY);
+    });
+    
+    $('#ct_ov_recalibrate').on('click', () => {
+        reset_calibration();
+    });
+    
+    $('#ct_ov_summarize').on('click', async () => {
+        const ctx = getContext();
+        const chat = ctx.chat;
+        const indexes = [];
+        
+        for (let i = 0; i < chat.length; i++) {
+            if (!chat[i].is_system && !get_memory(chat[i])) {
+                indexes.push(i);
+            }
+        }
+        
+        if (indexes.length > 0) {
+            toastr.info(`Summarizing ${indexes.length} messages...`, MODULE_NAME_FANCY);
+            await summaryQueue.summarize(indexes);
+            toastr.success('Summarization complete', MODULE_NAME_FANCY);
+        } else {
+            toastr.info('All messages already summarized', MODULE_NAME_FANCY);
+        }
+    });
+    
+    // Overview memory panel toggle
+    $('#ct_ov_memory_toggle').on('click', function() {
+        const $content = $('#ct_ov_memory_list');
+        const isExpanded = $content.is(':visible');
+        
+        if (isExpanded) {
+            $content.slideUp(200);
+            $(this).removeClass('expanded');
+        } else {
+            $content.slideDown(200);
+            $(this).addClass('expanded');
+        }
+    });
 }
 
 // Tab navigation functionality
@@ -1679,7 +2004,7 @@ async function test_qdrant_connection() {
             const collectionCount = data.result?.collections?.length || 0;
             $status.removeClass().addClass('ct_status_message ct_status_success')
                 .text(`Connected! ${collectionCount} collection(s) found`);
-            debug(`Qdrant connection successful: ${collectionCount} collections`);
+            debug_qdrant(`Connection successful: ${collectionCount} collections`);
         } else {
             throw new Error(`HTTP ${response.status}: ${response.statusText}`);
         }
@@ -1714,7 +2039,7 @@ async function test_embedding() {
             $('#ct_embedding_dimensions').val(embedding.length);
             $status.removeClass().addClass('ct_status_message ct_status_success')
                 .text(`Success! Dimensions: ${embedding.length}`);
-            debug(`Embedding test successful: ${embedding.length} dimensions`);
+            debug_qdrant(`Embedding test successful: ${embedding.length} dimensions`);
         } else {
             throw new Error('Empty embedding returned');
         }
@@ -1831,7 +2156,7 @@ async function clear_current_memories() {
         });
         
         toastr.success(`Cleared memories from "${collection}"`, MODULE_NAME_FANCY);
-        debug(`Cleared all memories from collection: ${collection}`);
+        debug_qdrant(`Cleared all memories from collection: ${collection}`);
     } catch (e) {
         toastr.error(`Failed to clear memories: ${e.message}`, MODULE_NAME_FANCY);
         error('Failed to clear memories:', e);
@@ -1858,7 +2183,7 @@ async function delete_current_collection() {
         
         if (response.ok) {
             toastr.success(`Deleted collection "${collection}"`, MODULE_NAME_FANCY);
-            debug(`Deleted collection: ${collection}`);
+            debug_qdrant(`Deleted collection: ${collection}`);
         } else {
             throw new Error(`HTTP ${response.status}`);
         }
@@ -1923,7 +2248,7 @@ class MemoryBuffer {
         
         // Don't flush if under minimum size (unless forced)
         if (this.currentSize < minSize) {
-            debug(`Buffer size ${this.currentSize} < min ${minSize}, not flushing`);
+            debug_qdrant(`Buffer size ${this.currentSize} < min ${minSize}, not flushing`);
             return null;
         }
         
@@ -2004,11 +2329,11 @@ const memoryBuffer = new MemoryBuffer();
 // Process and store a chunk to Qdrant
 async function process_and_store_chunk(chunk) {
     if (!get_settings('qdrant_enabled')) {
-        debug('Qdrant disabled, skipping chunk storage');
+        debug_qdrant('Qdrant disabled, skipping chunk storage');
         return;
     }
     
-    debug(`Processing chunk: ${chunk.messageIndexes.length} messages, ${chunk.text.length} chars`);
+    debug_qdrant(`Processing chunk: ${chunk.messageIndexes.length} messages, ${chunk.text.length} chars`);
     
     try {
         // Generate embedding for the chunk
@@ -2039,7 +2364,7 @@ async function process_and_store_chunk(chunk) {
         // Upsert to Qdrant
         await upsert_points([point]);
         
-        debug(`Stored chunk with ${chunk.messageIndexes.length} messages to Qdrant`);
+        debug_qdrant(`Stored chunk with ${chunk.messageIndexes.length} messages to Qdrant`);
         
     } catch (e) {
         error('Failed to process and store chunk:', e);
@@ -2080,12 +2405,12 @@ async function ensure_collection_exists() {
         });
         
         if (checkResponse.ok) {
-            debug(`Collection ${collection} already exists`);
+            debug_qdrant(`Collection ${collection} already exists`);
             return;
         }
         
         // Create collection
-        debug(`Creating collection ${collection} with ${dimensions} dimensions`);
+        debug_qdrant(`Creating collection ${collection} with ${dimensions} dimensions`);
         
         const createResponse = await fetch(`${url}/collections/${collection}`, {
             method: 'PUT',
@@ -2103,7 +2428,7 @@ async function ensure_collection_exists() {
             throw new Error(`Failed to create collection: ${errorText}`);
         }
         
-        debug(`Created collection ${collection}`);
+        debug_qdrant(`Created collection ${collection}`);
         
     } catch (e) {
         error('Failed to ensure collection exists:', e);
@@ -2133,7 +2458,7 @@ async function upsert_points(points) {
         throw new Error(`Failed to upsert points: ${errorText}`);
     }
     
-    debug(`Upserted ${points.length} points to ${collection}`);
+    debug_qdrant(`Upserted ${points.length} points to ${collection}`);
 }
 
 // Search for similar memories
@@ -2178,7 +2503,7 @@ async function search_memories(queryText, limit = null, scoreThreshold = null) {
         const data = await response.json();
         const results = data.result || [];
         
-        debug(`Search returned ${results.length} results`);
+        debug_qdrant(`Search returned ${results.length} results`);
         
         return results.map(r => ({
             id: r.id,
@@ -2240,11 +2565,11 @@ function buffer_message(index, text, isUser) {
         const summary = get_memory(message);
         if (summary) {
             textToBuffer = summary;
-            debug(`Using summary for Qdrant indexing (message ${index})`);
+            debug_synergy(`Using summary for Qdrant indexing (message ${index})`);
         }
     }
     
-    debug(`Buffering message ${index}: ${textToBuffer.substring(0, 50)}...`);
+    debug_qdrant(`Buffering message ${index}: ${textToBuffer.substring(0, 50)}...`);
     
     const chunk = memoryBuffer.add({
         index: index,
@@ -2323,7 +2648,7 @@ async function index_current_chat() {
     }
     
     toastr.success(`Indexed ${indexed} messages into ${stored} chunks`, MODULE_NAME_FANCY);
-    debug(`Indexed ${indexed} messages into ${stored} chunks`);
+    debug_qdrant(`Indexed ${indexed} messages into ${stored} chunks`);
 }
 
 // ==================== MEMORY RETRIEVAL AND INJECTION ====================
@@ -2371,7 +2696,7 @@ async function retrieve_relevant_memories() {
             return m.lastIndex < oldestRecentIndex;
         });
         
-        debug(`Retrieved ${filteredMemories.length} relevant memories (filtered from ${memories.length})`);
+        debug_qdrant(`Retrieved ${filteredMemories.length} relevant memories (filtered from ${memories.length})`);
         return filteredMemories;
         
     } catch (e) {
@@ -2428,7 +2753,7 @@ async function refresh_qdrant_memories() {
             extension_prompt_roles.SYSTEM
         );
         
-        debug(`Injected ${CURRENT_QDRANT_MEMORIES.length} Qdrant memories`);
+        debug_qdrant(`Injected ${CURRENT_QDRANT_MEMORIES.length} Qdrant memories`);
         
     } catch (e) {
         error('Failed to refresh Qdrant memories:', e);

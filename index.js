@@ -451,6 +451,26 @@ function load_truncation_index() {
         CHAT_TOKEN_CORRECTION_FACTOR = chat_metadata[MODULE_NAME].correction_factor;
         debug(`Loaded correction factor: ${CHAT_TOKEN_CORRECTION_FACTOR.toFixed(3)}`);
     }
+    
+    // Load calibration state for persistence across chat switches
+    if (chat_metadata?.[MODULE_NAME]?.calibration_state !== undefined) {
+        CALIBRATION_STATE = chat_metadata[MODULE_NAME].calibration_state;
+        GENERATION_COUNT = chat_metadata[MODULE_NAME].generation_count || 0;
+        STABLE_COUNT = chat_metadata[MODULE_NAME].stable_count || 0;
+        RETRAIN_COUNT = chat_metadata[MODULE_NAME].retrain_count || 0;
+        DELETION_COUNT = chat_metadata[MODULE_NAME].deletion_count || 0;
+        QDRANT_TOKEN_HISTORY = chat_metadata[MODULE_NAME].qdrant_token_history || [];
+        debug(`Loaded calibration state: ${CALIBRATION_STATE}, stable: ${STABLE_COUNT}/${STABLE_THRESHOLD}`);
+    } else {
+        // Reset to defaults for new chats without saved state
+        CALIBRATION_STATE = 'WAITING';
+        GENERATION_COUNT = 0;
+        STABLE_COUNT = 0;
+        RETRAIN_COUNT = 0;
+        DELETION_COUNT = 0;
+        QDRANT_TOKEN_HISTORY = [];
+        debug(`No calibration state found, reset to WAITING`);
+    }
 }
 
 function save_truncation_index() {
@@ -460,7 +480,16 @@ function save_truncation_index() {
     chat_metadata[MODULE_NAME].truncation_index = TRUNCATION_INDEX;
     chat_metadata[MODULE_NAME].target_size = get_settings('target_context_size');
     chat_metadata[MODULE_NAME].correction_factor = CHAT_TOKEN_CORRECTION_FACTOR;
-    debug(`Saved truncation index: ${TRUNCATION_INDEX}, correction factor: ${CHAT_TOKEN_CORRECTION_FACTOR.toFixed(3)}`);
+    
+    // Save calibration state for persistence across chat switches
+    chat_metadata[MODULE_NAME].calibration_state = CALIBRATION_STATE;
+    chat_metadata[MODULE_NAME].generation_count = GENERATION_COUNT;
+    chat_metadata[MODULE_NAME].stable_count = STABLE_COUNT;
+    chat_metadata[MODULE_NAME].retrain_count = RETRAIN_COUNT;
+    chat_metadata[MODULE_NAME].deletion_count = DELETION_COUNT;
+    chat_metadata[MODULE_NAME].qdrant_token_history = QDRANT_TOKEN_HISTORY;
+    
+    debug(`Saved truncation index: ${TRUNCATION_INDEX}, correction factor: ${CHAT_TOKEN_CORRECTION_FACTOR.toFixed(3)}, state: ${CALIBRATION_STATE}`);
     saveMetadataDebounced();
 }
 
@@ -2564,19 +2593,19 @@ function register_event_listeners() {
     eventSource.on(event_types.CHAT_CHANGED, () => {
         const newChatId = ctx.chatId;
         if (currentChatId !== null && currentChatId !== newChatId) {
-            debug('Chat switched, loading truncation index');
+            debug('Chat switched, loading truncation index and calibration state');
             TRUNCATION_INDEX = null;
-            // Fix 4.2: Don't reset correction factor here - load_truncation_index will load the saved one
-            // CHAT_TOKEN_CORRECTION_FACTOR = 1.0;  // REMOVED - this was destroying learned calibration
+            // load_truncation_index() now loads ALL calibration state from chat_metadata:
+            // - truncation_index, correction_factor
+            // - calibration_state, generation_count, stable_count, retrain_count
+            // - deletion_count, qdrant_token_history
             load_truncation_index();
             
-            // Clear Qdrant memories and history for new chat
+            // Clear Qdrant memories for new chat (these are transient, not persisted)
             CURRENT_QDRANT_MEMORIES = [];
             CURRENT_QDRANT_INJECTION = '';
-            QDRANT_TOKEN_HISTORY = [];  // Reset Qdrant token history for new chat
-            
-            // Reset deletion tracking for new chat
-            DELETION_COUNT = 0;
+            // NOTE: QDRANT_TOKEN_HISTORY and DELETION_COUNT are now loaded from chat_metadata
+            // by load_truncation_index() - no manual reset needed
         }
         currentChatId = newChatId;
         

@@ -113,10 +113,15 @@ Recent chat always takes precedence over these notes.
     save_char_messages: true,
     per_chat_collection: true,
     
-    // Chunking settings (from st-qdrant-memory)
+    // Chunking settings (DEPRECATED - kept for backwards compatibility)
     chunk_min_size: 1200,
     chunk_max_size: 1500,
     chunk_timeout: 30000,
+    
+    // Per-message vectorization settings (NEW - replaces chunking)
+    vectorization_delay: 2,           // Don't vectorize messages within N positions from end
+    delete_on_message_delete: true,   // Delete Qdrant entries when messages are deleted
+    auto_dedupe: true,                // Automatically remove duplicate entries during search
     
     // ==================== SYNERGY SETTINGS ====================
     use_summaries_for_qdrant: false,
@@ -1557,6 +1562,24 @@ function update_calibration_ui() {
 
 // ==================== OVERVIEW TAB FUNCTIONS ====================
 
+// Calculate World Rules tokens from raw prompt
+// World Rules are bounded by "## Lore:" and "## {{user}}'s Persona:"
+function calculate_world_rules_tokens(raw_prompt) {
+    if (!raw_prompt) return 0;
+    
+    const startMarker = '## Lore:';
+    const endMarker = "## {{user}}'s Persona:";
+    
+    const startIndex = raw_prompt.indexOf(startMarker);
+    if (startIndex === -1) return 0;
+    
+    const endIndex = raw_prompt.indexOf(endMarker, startIndex);
+    if (endIndex === -1) return 0;
+    
+    const worldRulesSection = raw_prompt.substring(startIndex, endIndex);
+    return count_tokens(worldRulesSection);
+}
+
 // Update the Overview tab with current stats
 function update_overview_tab() {
     const last_raw_prompt = get_last_prompt_raw();
@@ -1571,36 +1594,62 @@ function update_overview_tab() {
         const $gaugeFill = $('#ct_gauge_fill');
         $gaugeFill.css('width', `${Math.min(utilization, 100)}%`);
         
-        // Update gauge color based on utilization
+        // Update target marker position
+        const targetUtilization = get_settings('target_utilization');
+        $('#ct_gauge_target').css('left', `${targetUtilization * 100}%`);
+        
+        // Smart gauge color based on calibration state
         $gaugeFill.removeClass('ct_gauge_green ct_gauge_yellow ct_gauge_red');
-        if (utilization <= 80) {
+        
+        if (CALIBRATION_STATE === 'WAITING') {
+            // Waiting phase = always green (extension not active yet)
             $gaugeFill.addClass('ct_gauge_green');
-        } else if (utilization <= 90) {
-            $gaugeFill.addClass('ct_gauge_yellow');
         } else {
-            $gaugeFill.addClass('ct_gauge_red');
+            // Active phases - color based on deviation from target
+            const tolerance = get_settings('calibration_tolerance');
+            const targetPct = targetUtilization * 100;
+            const deviation = Math.abs(utilization - targetPct);
+            const tolerancePct = tolerance * 100;
+            
+            // Midpoint between target and tolerance boundary
+            const midpointDeviation = tolerancePct / 2;
+            
+            if (deviation <= midpointDeviation) {
+                // Within midpoint - green (close to target)
+                $gaugeFill.addClass('ct_gauge_green');
+            } else if (deviation <= tolerancePct) {
+                // Between midpoint and tolerance - yellow (slightly off)
+                $gaugeFill.addClass('ct_gauge_yellow');
+            } else {
+                // Beyond tolerance - red (significantly off)
+                $gaugeFill.addClass('ct_gauge_red');
+            }
         }
         
         // Update labels
         $('#ct_gauge_value').text(`${utilization.toFixed(1)}%`);
         $('#ct_gauge_max').text(`of ${maxContext.toLocaleString()} tokens`);
         
-        // Update Breakdown Bar
+        // Update Breakdown Bar (now includes World Rules)
         const segments = get_prompt_chat_segments_from_raw(last_raw_prompt);
         const chatTokens = segments ? segments.reduce((sum, seg) => sum + seg.tokenCount, 0) : 0;
-        const systemTokens = actualSize - chatTokens;  // Rough estimate
+        const worldRulesTokens = calculate_world_rules_tokens(last_raw_prompt);
         const summaryTokens = count_tokens(get_summary_injection());
         const qdrantTokens = get_qdrant_injection_tokens();
+        // System is everything else (total - chat - worldRules - summaries - qdrant)
+        const systemTokens = Math.max(0, actualSize - chatTokens - worldRulesTokens - summaryTokens - qdrantTokens);
         const freeTokens = Math.max(0, maxContext - actualSize);
         
         const chatPct = (chatTokens / maxContext * 100);
         const systemPct = (systemTokens / maxContext * 100);
+        const worldRulesPct = (worldRulesTokens / maxContext * 100);
         const summaryPct = (summaryTokens / maxContext * 100);
         const qdrantPct = (qdrantTokens / maxContext * 100);
         const freePct = (freeTokens / maxContext * 100);
         
         $('#ct_breakdown_chat').css('width', `${chatPct}%`);
         $('#ct_breakdown_system').css('width', `${systemPct}%`);
+        $('#ct_breakdown_worldrules').css('width', `${worldRulesPct}%`);
         $('#ct_breakdown_summaries').css('width', `${summaryPct}%`);
         $('#ct_breakdown_qdrant').css('width', `${qdrantPct}%`);
         $('#ct_breakdown_free').css('width', `${freePct}%`);
@@ -1608,6 +1657,7 @@ function update_overview_tab() {
         // Update token counts in foldable section
         $('#ct_breakdown_chat_tokens').text(`${chatTokens.toLocaleString()} tokens`);
         $('#ct_breakdown_system_tokens').text(`${systemTokens.toLocaleString()} tokens`);
+        $('#ct_breakdown_worldrules_tokens').text(`${worldRulesTokens.toLocaleString()} tokens`);
         $('#ct_breakdown_summaries_tokens').text(`${summaryTokens.toLocaleString()} tokens`);
         $('#ct_breakdown_qdrant_tokens').text(`${qdrantTokens.toLocaleString()} tokens`);
         $('#ct_breakdown_free_tokens').text(`${freeTokens.toLocaleString()} tokens`);
@@ -2110,6 +2160,15 @@ function togglePopoutLock() {
     if (!$POPOUT) return;
     
     POPOUT_LOCKED = !POPOUT_LOCKED;
+    update_lock_button_ui();
+    save_popout_position(); // Persist lock state immediately
+    
+    debug_trunc(`Popout position ${POPOUT_LOCKED ? 'locked' : 'unlocked'}`);
+}
+
+// Update the lock button UI state
+function update_lock_button_ui() {
+    if (!$POPOUT) return;
     
     const $button = $POPOUT.find('.dragLock');
     
@@ -2117,12 +2176,10 @@ function togglePopoutLock() {
         $button.removeClass('fa-lock-open').addClass('fa-lock locked');
         $button.attr('title', 'Unlock position');
         $POPOUT.addClass('position-locked');
-        debug_trunc('Popout position locked');
     } else {
         $button.removeClass('fa-lock locked').addClass('fa-lock-open');
         $button.attr('title', 'Lock position');
         $POPOUT.removeClass('position-locked');
-        debug_trunc('Popout position unlocked');
     }
 }
 
@@ -2194,7 +2251,8 @@ function save_popout_position() {
         left: $POPOUT.css('left'),
         top: $POPOUT.css('top'),
         right: $POPOUT.css('right'),
-        width: $POPOUT.css('width')
+        width: $POPOUT.css('width'),
+        locked: POPOUT_LOCKED
     };
     
     localStorage.setItem('ct_popout_position', JSON.stringify(position));
@@ -2218,6 +2276,13 @@ function load_popout_position() {
             if (position.width) {
                 $POPOUT.css('width', position.width);
             }
+            
+            // Restore lock state
+            if (position.locked !== undefined) {
+                POPOUT_LOCKED = position.locked;
+                update_lock_button_ui();
+            }
+            
             debug_trunc('Popout position loaded:', position);
         } catch (e) {
             debug_trunc('Failed to load popout position:', e);
@@ -2525,6 +2590,9 @@ function register_event_listeners() {
     // Smart handling of message deletions
     eventSource.on(event_types.MESSAGE_DELETED, () => {
         handle_message_deleted();
+        
+        // Also handle Qdrant message deletion sync
+        handle_qdrant_message_deleted();
     });
     
     // Auto-summarize and auto-buffer on new character messages
@@ -2543,6 +2611,9 @@ function register_event_listeners() {
             }
         }
         
+        // Vectorize delayed messages that are now outside the delay window
+        vectorize_delayed_messages();
+        
         // Delay status update to ensure itemizedPrompts is populated
         setTimeout(() => update_status_display(), 100);
     });
@@ -2560,6 +2631,9 @@ function register_event_listeners() {
                 buffer_message(id, message.mes, true);  // true = user message
             }
         }
+        
+        // Vectorize delayed messages that are now outside the delay window
+        vectorize_delayed_messages();
         
         // Delay status update to ensure itemizedPrompts is populated
         setTimeout(() => update_status_display(), 100);
@@ -2709,6 +2783,11 @@ function initialize_ui_listeners() {
     bind_setting('#ct_save_user_messages', 'save_user_messages', 'boolean');
     bind_setting('#ct_save_char_messages', 'save_char_messages', 'boolean');
     bind_setting('#ct_per_chat_collection', 'per_chat_collection', 'boolean');
+    
+    // Per-message vectorization settings (NEW)
+    bind_range_setting('#ct_vectorization_delay', 'vectorization_delay', '#ct_vectorization_delay_display');
+    bind_setting('#ct_delete_on_message_delete', 'delete_on_message_delete', 'boolean');
+    bind_setting('#ct_auto_dedupe', 'auto_dedupe', 'boolean');
     
     // Qdrant action buttons
     $('#ct_qdrant_test').on('click', test_qdrant_connection);
@@ -3401,6 +3480,10 @@ async function search_memories(queryText, limit = null, scoreThreshold = null) {
     limit = limit ?? get_settings('memory_limit');
     scoreThreshold = scoreThreshold ?? get_settings('score_threshold');
     
+    // Request extra results if deduplication is enabled (to have enough after removing duplicates)
+    const autoDedupe = get_settings('auto_dedupe');
+    const requestLimit = autoDedupe ? limit * 2 : limit;
+    
     try {
         // Generate embedding for query
         const queryEmbedding = await generate_embedding(queryText);
@@ -3412,7 +3495,7 @@ async function search_memories(queryText, limit = null, scoreThreshold = null) {
         // Build search request
         const searchBody = {
             vector: queryEmbedding,
-            limit: limit,
+            limit: requestLimit,
             score_threshold: scoreThreshold,
             with_payload: true
         };
@@ -3429,21 +3512,64 @@ async function search_memories(queryText, limit = null, scoreThreshold = null) {
         }
         
         const data = await response.json();
-        const results = data.result || [];
+        let results = data.result || [];
         
         debug_qdrant(`Search returned ${results.length} results`);
         
-        return results.map(r => ({
-            id: r.id,
-            score: r.score,
-            text: r.payload.text,
-            messageIndexes: r.payload.message_indexes,
-            firstIndex: r.payload.first_index,
-            lastIndex: r.payload.last_index,
-            timestamp: r.payload.timestamp,
-            characterName: r.payload.character_name,
-            chatId: r.payload.chat_id
-        }));
+        // Detect and remove duplicates if enabled
+        if (autoDedupe && results.length > 0) {
+            const { uniqueResults, duplicateIds } = detect_duplicates(results);
+            
+            // Async delete duplicates (fire-and-forget)
+            if (duplicateIds.length > 0) {
+                delete_points_by_ids(duplicateIds).catch(e => {
+                    error('Failed to delete duplicate points:', e);
+                });
+                debug_qdrant(`Removing ${duplicateIds.length} duplicates, keeping ${uniqueResults.length} unique`);
+            }
+            
+            results = uniqueResults;
+        }
+        
+        // Limit to requested count after deduplication
+        results = results.slice(0, limit);
+        
+        // Map results to common format (handle both old chunked format and new per-message format)
+        return results.map(r => {
+            const payload = r.payload;
+            
+            // Check for new per-message format (message_index) vs old chunked format (message_indexes)
+            if (payload.message_index !== undefined) {
+                // New per-message format
+                return {
+                    id: r.id,
+                    score: r.score,
+                    text: payload.text,
+                    messageIndex: payload.message_index,
+                    messageHash: payload.message_hash,
+                    isUser: payload.is_user,
+                    // For backwards compatibility, also provide first/last index
+                    firstIndex: payload.message_index,
+                    lastIndex: payload.message_index,
+                    timestamp: payload.timestamp,
+                    characterName: payload.character_name,
+                    chatId: payload.chat_id
+                };
+            } else {
+                // Old chunked format
+                return {
+                    id: r.id,
+                    score: r.score,
+                    text: payload.text,
+                    messageIndexes: payload.message_indexes,
+                    firstIndex: payload.first_index,
+                    lastIndex: payload.last_index,
+                    timestamp: payload.timestamp,
+                    characterName: payload.character_name,
+                    chatId: payload.chat_id
+                };
+            }
+        });
         
     } catch (e) {
         error('Failed to search memories:', e);
@@ -3478,39 +3604,282 @@ async function get_collection_info() {
     }
 }
 
-// Add a message to the memory buffer
+// Add a message to the memory buffer (DEPRECATED - kept for backwards compatibility)
 function buffer_message(index, text, isUser) {
+    // Redirect to new per-message vectorization
+    vectorize_message(index, text, isUser);
+}
+
+// ==================== PER-MESSAGE VECTORIZATION (NEW) ====================
+
+// Vectorize a single message and store it in Qdrant
+async function vectorize_message(index, text, isUser) {
     if (!get_settings('qdrant_enabled')) return;
     if (!get_settings('auto_save_memories')) return;
     if (isUser && !get_settings('save_user_messages')) return;
     if (!isUser && !get_settings('save_char_messages')) return;
     
-    // SYNERGY: Use summaries for Qdrant if enabled and available
-    let textToBuffer = text;
+    const ctx = getContext();
+    const message = ctx.chat[index];
+    
+    if (!message) {
+        debug_qdrant(`Message ${index} not found, skipping vectorization`);
+        return;
+    }
+    
+    // Check if already vectorized
+    if (get_data(message, 'vectorized')) {
+        debug_qdrant(`Message ${index} already vectorized, skipping`);
+        return;
+    }
+    
+    // Check vectorization delay
+    const delay = get_settings('vectorization_delay');
+    if (index >= ctx.chat.length - delay) {
+        debug_qdrant(`Message ${index} within delay window (${delay}), skipping`);
+        return;
+    }
+    
+    // SYNERGY: Use summary if enabled and available
+    let textToVectorize = text;
     if (get_settings('use_summaries_for_qdrant')) {
-        const ctx = getContext();
-        const message = ctx.chat[index];
         const summary = get_memory(message);
         if (summary) {
-            textToBuffer = summary;
-            debug_synergy(`Using summary for Qdrant indexing (message ${index})`);
+            textToVectorize = summary;
+            debug_synergy(`Using summary for message ${index}`);
         }
     }
     
-    debug_qdrant(`Buffering message ${index}: ${textToBuffer.substring(0, 50)}...`);
+    try {
+        // Generate embedding
+        const embedding = await generate_embedding(textToVectorize);
+        
+        if (!embedding || embedding.length === 0) {
+            throw new Error('Failed to generate embedding');
+        }
+        
+        // Ensure collection exists
+        await ensure_collection_exists();
+        
+        // Create message hash for deduplication and deletion
+        const messageHash = getStringHash(text);
+        
+        // Create point
+        const point = {
+            id: generate_point_id(),
+            vector: embedding,
+            payload: {
+                message_index: index,
+                message_hash: messageHash,
+                text: textToVectorize,
+                is_user: isUser,
+                timestamp: Date.now(),
+                chat_id: ctx.chatId,
+                character_name: ctx.name2 || 'Unknown'
+            }
+        };
+        
+        // Upsert to Qdrant
+        await upsert_points([point]);
+        
+        // Mark as vectorized
+        set_data(message, 'vectorized', true);
+        set_data(message, 'vector_hash', messageHash);
+        
+        debug_qdrant(`Vectorized message ${index} (hash: ${messageHash})`);
+        
+    } catch (e) {
+        error(`Failed to vectorize message ${index}:`, e);
+    }
+}
+
+// Vectorize messages that were previously skipped due to delay
+async function vectorize_delayed_messages() {
+    if (!get_settings('qdrant_enabled')) return;
+    if (!get_settings('auto_save_memories')) return;
     
-    const chunk = memoryBuffer.add({
-        index: index,
-        text: textToBuffer,
-        isUser: isUser,
-        timestamp: Date.now()
+    const ctx = getContext();
+    const chat = ctx.chat;
+    
+    if (!chat || chat.length === 0) return;
+    
+    const delay = get_settings('vectorization_delay');
+    const threshold = chat.length - delay;
+    
+    debug_qdrant(`Checking for delayed messages to vectorize (threshold: ${threshold})`);
+    
+    let vectorized = 0;
+    
+    for (let i = 0; i < threshold; i++) {
+        const message = chat[i];
+        
+        // Skip system messages
+        if (message.is_system) continue;
+        
+        // Skip already vectorized
+        if (get_data(message, 'vectorized')) continue;
+        
+        // Check message type settings
+        if (message.is_user && !get_settings('save_user_messages')) continue;
+        if (!message.is_user && !get_settings('save_char_messages')) continue;
+        
+        // Vectorize this message
+        await vectorize_message(i, message.mes, message.is_user);
+        vectorized++;
+    }
+    
+    if (vectorized > 0) {
+        debug_qdrant(`Vectorized ${vectorized} delayed messages`);
+    }
+}
+
+// ==================== DUPLICATE DETECTION ====================
+
+// Detect and remove duplicate entries in search results
+function detect_duplicates(results) {
+    const seenHashes = new Map();  // hash -> { result, timestamp }
+    const uniqueResults = [];
+    const duplicateIds = [];
+    
+    for (const result of results) {
+        const hash = result.payload.message_hash;
+        const timestamp = result.payload.timestamp;
+        
+        // Skip results without hash (old format)
+        if (!hash) {
+            uniqueResults.push(result);
+            continue;
+        }
+        
+        if (seenHashes.has(hash)) {
+            const existing = seenHashes.get(hash);
+            
+            if (timestamp > existing.timestamp) {
+                // Current is newer = duplicate, delete it
+                duplicateIds.push(result.id);
+                debug_qdrant(`Duplicate found: ${result.id} is newer copy of ${existing.result.id}`);
+            } else {
+                // Current is older = keep it, delete existing
+                duplicateIds.push(existing.result.id);
+                const idx = uniqueResults.indexOf(existing.result);
+                if (idx >= 0) {
+                    uniqueResults[idx] = result;
+                }
+                seenHashes.set(hash, { result, timestamp });
+                debug_qdrant(`Duplicate found: ${existing.result.id} is newer copy of ${result.id}`);
+            }
+        } else {
+            seenHashes.set(hash, { result, timestamp });
+            uniqueResults.push(result);
+        }
+    }
+    
+    return { uniqueResults, duplicateIds };
+}
+
+// Delete points by their IDs
+async function delete_points_by_ids(pointIds) {
+    if (!pointIds || pointIds.length === 0) return;
+    
+    const url = get_settings('qdrant_url');
+    const collection = get_current_collection_name();
+    
+    if (!url || !collection) {
+        throw new Error('Qdrant not configured');
+    }
+    
+    const response = await fetch(`${url}/collections/${collection}/points/delete`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+            points: pointIds
+        })
     });
     
-    if (chunk) {
-        // Process the chunk asynchronously
-        process_and_store_chunk(chunk).catch(e => {
-            error('Failed to process chunk:', e);
-        });
+    if (!response.ok) {
+        throw new Error(`Delete failed: ${await response.text()}`);
+    }
+    
+    debug_qdrant(`Deleted ${pointIds.length} duplicate points`);
+}
+
+// ==================== MESSAGE DELETION SYNC ====================
+
+// Delete Qdrant point by message hash
+async function delete_qdrant_point_by_hash(messageHash) {
+    const url = get_settings('qdrant_url');
+    const collection = get_current_collection_name();
+    const ctx = getContext();
+    
+    if (!url || !collection) {
+        throw new Error('Qdrant not configured');
+    }
+    
+    const response = await fetch(`${url}/collections/${collection}/points/delete`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+            filter: {
+                must: [
+                    { key: "message_hash", match: { value: messageHash } },
+                    { key: "chat_id", match: { value: ctx.chatId } }
+                ]
+            }
+        })
+    });
+    
+    if (response.ok) {
+        debug_qdrant(`Deleted Qdrant point for hash ${messageHash}`);
+        return true;
+    } else {
+        error(`Failed to delete Qdrant point: ${await response.text()}`);
+        return false;
+    }
+}
+
+// Handle Qdrant deletion when messages are deleted in SillyTavern
+async function handle_qdrant_message_deleted() {
+    if (!get_settings('qdrant_enabled')) return;
+    if (!get_settings('delete_on_message_delete')) return;
+    
+    const ctx = getContext();
+    const chat = ctx.chat;
+    const currentLength = chat ? chat.length : 0;
+    const previousLength = LAST_CHAT_LENGTH;
+    
+    if (currentLength >= previousLength) return;  // No deletion
+    
+    debug_qdrant(`Message deletion detected: ${previousLength} -> ${currentLength}`);
+    
+    // Find deleted message hashes by comparing snapshots
+    const deletedHashes = [];
+    
+    for (const [idx, oldHash] of LAST_CHAT_HASHES) {
+        const currentMessage = chat[idx];
+        const newHash = currentMessage ? compute_message_hash(currentMessage) : null;
+        
+        if (oldHash !== newHash) {
+            // This message was deleted or changed
+            // Look for vector_hash in our records
+            // Since message is deleted, we need to use the stored hash from LAST_CHAT_HASHES
+            deletedHashes.push(oldHash);
+        }
+    }
+    
+    if (deletedHashes.length === 0) {
+        debug_qdrant('No hashes found for deleted messages');
+        return;
+    }
+    
+    debug_qdrant(`Found ${deletedHashes.length} hashes to delete from Qdrant`);
+    
+    // Delete each hash from Qdrant
+    for (const hash of deletedHashes) {
+        try {
+            await delete_qdrant_point_by_hash(hash);
+        } catch (e) {
+            error(`Failed to delete Qdrant point for hash ${hash}:`, e);
+        }
     }
 }
 

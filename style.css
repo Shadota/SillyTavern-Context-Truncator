@@ -510,23 +510,27 @@
 }
 
 .ct_breakdown_chat {
-    background: #4fc3f7;
+    background: #4caf50; /* Green */
 }
 
 .ct_breakdown_system {
-    background: #81c784;
+    background: #f44336; /* Red */
+}
+
+.ct_breakdown_worldrules {
+    background: #ffcc00; /* Yellow */
 }
 
 .ct_breakdown_summaries {
-    background: #ffb74d;
+    background: #00bcd4; /* Cyan/Teal */
 }
 
 .ct_breakdown_qdrant {
-    background: #ce93d8;
+    background: #ce93d8; /* Purple - unchanged */
 }
 
 .ct_breakdown_free {
-    background: #5a5a5a;
+    background: #5a5a5a; /* Gray - unchanged */
 }
 
 .ct_breakdown_legend {
@@ -619,7 +623,7 @@
     position: fixed;
     top: var(--topBarBlockSize, 50px);
     right: 10px;
-    width: 540px;
+    width: 600px;
     max-width: calc(100vw - 20px);
     max-height: calc(100vh - var(--topBarBlockSize, 50px) - 20px);
     overflow: hidden;
@@ -996,4 +1000,26 @@
 #ct_popout.position-locked .drag-grabber {
     opacity: 0.3;
     cursor: not-allowed;
+}
+
+/* ==================== CONTEXT GAUGE TICK MARKS ==================== */
+.ct_gauge_tick {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    width: 1px;
+    background: rgba(255, 255, 255, 0.3);
+    transform: translateX(-50%);
+    pointer-events: none;
+}
+
+.ct_gauge_target_marker {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    width: 3px;
+    background: rgba(255, 255, 255, 0.8);
+    transform: translateX(-50%);
+    box-shadow: 0 0 4px rgba(255, 255, 255, 0.5);
+    pointer-events: none;
 }

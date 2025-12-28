@@ -116,6 +116,8 @@
 .ct_info_box span {
     font-size: 0.9em;
     line-height: 1.4;
+    flex: 1;
+    min-width: 0;
 }
 
 /* ==================== DANGER BUTTON ==================== */
@@ -623,7 +625,7 @@
     position: fixed;
     top: var(--topBarBlockSize, 50px);
     right: 10px;
-    width: 550px;
+    width: 570px;
     min-width: 400px;
     max-width: calc(100vw - 20px);
     max-height: calc(100vh - var(--topBarBlockSize, 50px) - 20px);
@@ -1041,7 +1043,7 @@
     font-size: 0.8em;
     opacity: 0.4;
     margin-left: 5px;
-    color: var(--SmartThemeQuoteColor);
+    color: inherit;
     transition: opacity 0.2s ease;
 }
 
@@ -1132,7 +1134,7 @@
 
 .ct_setting_value {
     font-weight: bold;
-    color: var(--SmartThemeQuoteColor);
+    color: var(--SmartThemeBodyColor);
     min-width: 45px;
     text-align: right;
     font-size: 0.95em;
@@ -1153,7 +1155,7 @@
     -webkit-appearance: none;
     width: 14px;
     height: 14px;
-    background: var(--SmartThemeQuoteColor);
+    background: #9e9e9e;
     border-radius: 50%;
     cursor: pointer;
     transition: transform 0.1s ease;
@@ -1166,7 +1168,7 @@
 .ct_compact_slider::-moz-range-thumb {
     width: 14px;
     height: 14px;
-    background: var(--SmartThemeQuoteColor);
+    background: #9e9e9e;
     border-radius: 50%;
     cursor: pointer;
     border: none;
@@ -1298,7 +1300,7 @@
 
 /* ==================== SECTION DIVIDER ==================== */
 .ct_section_divider {
-    margin: 15px 0;
+    margin: 10px 0;
     border: none;
     border-top: 1px solid var(--SmartThemeBorderColor);
     opacity: 0.3;
@@ -1378,7 +1380,7 @@
 }
 
 .ct_info_number {
-    color: var(--SmartThemeQuoteColor);
+    color: var(--SmartThemeBodyColor);
     opacity: 0.7;
     min-width: 16px;
     font-weight: bold;

@@ -175,7 +175,7 @@
                                     <i class="fa-solid fa-circle-info ct_info_icon"></i>
                                     <span class="ct_tooltip_text">Messages still in active context (not truncated)</span>
                                 </span>
-                                <span id="ct_ov_sum_active" class="ct_stat_value ct_text_blue">--</span>
+                                <span id="ct_ov_sum_active" class="ct_stat_value">--</span>
                             </div>
                         </div>
                     </div>
@@ -199,7 +199,7 @@
                             </div>
                             <div class="ct_advanced_item">
                                 <span class="ct_advanced_label ct_tooltip">
-                                    Trunc Index
+                                    Trunc. Index
                                     <i class="fa-solid fa-circle-info ct_info_icon"></i>
                                     <span class="ct_tooltip_text">Message index where truncation begins (0 = no truncation)</span>
                                 </span>
@@ -215,7 +215,7 @@
                             </div>
                             <div class="ct_advanced_item">
                                 <span class="ct_advanced_label ct_tooltip">
-                                    Cal Progress
+                                    Cal. Progress
                                     <i class="fa-solid fa-circle-info ct_info_icon"></i>
                                     <span class="ct_tooltip_text">Progress toward stable calibration</span>
                                 </span>
@@ -260,18 +260,18 @@
                 <!-- Quick Actions Row -->
                 <div class="ct_overview_section">
                     <h4><i class="fa-solid fa-bolt"></i> Quick Actions</h4>
-                    <div class="ct_quick_actions">
-                        <button id="ct_ov_reset" class="menu_button">
-                            <i class="fa-solid fa-rotate-left"></i>
-                            <span>Reset Truncation</span>
+                    <div class="ct_button_row">
+                        <button id="ct_ov_reset" class="menu_button" title="Reset truncation index and restart adaptive learning">
+                            <i class="fa-solid fa-rotate-left"></i> Reset
                         </button>
-                        <button id="ct_ov_recalibrate" class="menu_button">
-                            <i class="fa-solid fa-sync"></i>
-                            <span>Recalibrate</span>
+                        <button id="ct_ov_recalibrate" class="menu_button" title="Reset calibration and start training from scratch">
+                            <i class="fa-solid fa-sync"></i> Recalibrate
                         </button>
-                        <button id="ct_ov_summarize" class="menu_button">
-                            <i class="fa-solid fa-compress"></i>
-                            <span>Summarize All</span>
+                        <button id="ct_ov_summarize" class="menu_button" title="Summarize all messages without summaries">
+                            <i class="fa-solid fa-compress"></i> Summarize All
+                        </button>
+                        <button id="ct_ov_stop_summarize" class="menu_button menu_button_danger" title="Stop the current summarization queue" style="display: none;">
+                            <i class="fa-solid fa-stop"></i> Stop
                         </button>
                     </div>
                 </div>
@@ -405,6 +405,9 @@
                     <button id="ct_summarize_all" class="menu_button" title="Summarize all messages without summaries">
                         <i class="fa-solid fa-compress"></i> Summarize All
                     </button>
+                    <button id="ct_stop_summarize" class="menu_button menu_button_danger" title="Stop the current summarization queue" style="display: none;">
+                        <i class="fa-solid fa-stop"></i> Stop
+                    </button>
                 </div>
 
                 <hr class="ct_section_divider">
@@ -500,6 +503,36 @@
                     <input id="ct_qdrant_collection" class="text_pole" type="text" placeholder="sillytavern_memories" />
                 </div>
 
+                <hr class="ct_section_divider">
+
+                <!-- Embedding Settings (moved from Advanced) -->
+                <div class="ct_section_header">
+                    <i class="fa-solid fa-cube"></i>
+                    <span>Embedding</span>
+                </div>
+
+                <div class="ct_compact_input">
+                    <label for="ct_embedding_url">
+                        Endpoint URL
+                        <span class="ct_tooltip">
+                            <i class="fa-solid fa-circle-info ct_info_icon"></i>
+                            <span class="ct_tooltip_text">KoboldCPP or compatible endpoint (OpenAI-compatible format)</span>
+                        </span>
+                    </label>
+                    <input id="ct_embedding_url" class="text_pole" type="text" placeholder="http://localhost:5001/api/extra/embeddings" />
+                </div>
+
+                <div class="ct_compact_input">
+                    <label for="ct_embedding_api_key">
+                        API Key (optional)
+                        <span class="ct_tooltip">
+                            <i class="fa-solid fa-circle-info ct_info_icon"></i>
+                            <span class="ct_tooltip_text">Bearer token if your endpoint requires authentication</span>
+                        </span>
+                    </label>
+                    <input id="ct_embedding_api_key" class="text_pole" type="password" placeholder="Leave empty if not required" />
+                </div>
+
                 <div class="ct_button_row">
                     <button id="ct_qdrant_test" class="menu_button" title="Test Qdrant connection">
                         <i class="fa-solid fa-plug"></i> Test Qdrant
@@ -510,56 +543,6 @@
                 </div>
                 <div id="ct_qdrant_status" class="ct_status_message" style="margin-top: 8px;"></div>
                 <div id="ct_embedding_status" class="ct_status_message" style="margin-top: 4px;"></div>
-
-                <hr class="ct_section_divider">
-
-                <!-- Memory Retrieval Settings -->
-                <div class="ct_section_header">
-                    <i class="fa-solid fa-search"></i>
-                    <span>Retrieval Settings</span>
-                </div>
-
-                <div class="ct_compact_setting">
-                    <div class="ct_setting_header">
-                        <span class="ct_setting_label">
-                            Memories
-                            <span class="ct_tooltip">
-                                <i class="fa-solid fa-circle-info ct_info_icon"></i>
-                                <span class="ct_tooltip_text">Maximum memories to retrieve per generation.</span>
-                            </span>
-                        </span>
-                        <span id="ct_memory_limit_display" class="ct_setting_value">5</span>
-                    </div>
-                    <input id="ct_memory_limit" class="ct_compact_slider" type="range" min="1" max="20" value="5" />
-                </div>
-
-                <div class="ct_compact_setting">
-                    <div class="ct_setting_header">
-                        <span class="ct_setting_label">
-                            Threshold
-                            <span class="ct_tooltip">
-                                <i class="fa-solid fa-circle-info ct_info_icon"></i>
-                                <span class="ct_tooltip_text">Minimum similarity score (0.0-1.0). Higher = only highly relevant results.</span>
-                            </span>
-                        </span>
-                        <span id="ct_score_threshold_display" class="ct_setting_value">0.30</span>
-                    </div>
-                    <input id="ct_score_threshold" class="ct_compact_slider" type="range" min="0" max="1" step="0.05" value="0.3" />
-                </div>
-
-                <div class="ct_compact_setting">
-                    <div class="ct_setting_header">
-                        <span class="ct_setting_label">
-                            Position
-                            <span class="ct_tooltip">
-                                <i class="fa-solid fa-circle-info ct_info_icon"></i>
-                                <span class="ct_tooltip_text">Insert memories N messages from the end of chat.</span>
-                            </span>
-                        </span>
-                        <span id="ct_memory_position_display" class="ct_setting_value">2</span>
-                    </div>
-                    <input id="ct_memory_position" class="ct_compact_slider" type="range" min="1" max="30" value="2" />
-                </div>
 
                 <hr class="ct_section_divider">
 
@@ -609,32 +592,86 @@
                 </div>
                 <div class="ct_advanced_content" id="ct_qdrant_advanced_content" style="display: none;">
                     
-                    <!-- Embedding Settings -->
+                    <!-- Memory Retrieval Settings -->
                     <div class="ct_section_header" style="margin-top: 0;">
-                        <i class="fa-solid fa-cube"></i>
-                        <span>Embedding</span>
+                        <i class="fa-solid fa-search"></i>
+                        <span>Retrieval Settings</span>
                     </div>
 
-                    <div class="ct_compact_input">
-                        <label for="ct_embedding_url">
-                            Endpoint URL
-                            <span class="ct_tooltip">
-                                <i class="fa-solid fa-circle-info ct_info_icon"></i>
-                                <span class="ct_tooltip_text">KoboldCPP or compatible endpoint (OpenAI-compatible format)</span>
+                    <div class="ct_compact_setting">
+                        <div class="ct_setting_header">
+                            <span class="ct_setting_label">
+                                Memories
+                                <span class="ct_tooltip">
+                                    <i class="fa-solid fa-circle-info ct_info_icon"></i>
+                                    <span class="ct_tooltip_text">Maximum memories to retrieve per generation.</span>
+                                </span>
                             </span>
-                        </label>
-                        <input id="ct_embedding_url" class="text_pole" type="text" placeholder="http://localhost:5001/api/extra/embeddings" />
+                            <span id="ct_memory_limit_display" class="ct_setting_value">5</span>
+                        </div>
+                        <input id="ct_memory_limit" class="ct_compact_slider" type="range" min="1" max="20" value="5" />
                     </div>
 
-                    <div class="ct_compact_input">
-                        <label for="ct_embedding_api_key">
-                            API Key (optional)
-                            <span class="ct_tooltip">
-                                <i class="fa-solid fa-circle-info ct_info_icon"></i>
-                                <span class="ct_tooltip_text">Bearer token if your endpoint requires authentication</span>
+                    <div class="ct_compact_setting">
+                        <div class="ct_setting_header">
+                            <span class="ct_setting_label">
+                                Threshold
+                                <span class="ct_tooltip">
+                                    <i class="fa-solid fa-circle-info ct_info_icon"></i>
+                                    <span class="ct_tooltip_text">Minimum similarity score (0.0-1.0). Higher = only highly relevant results.</span>
+                                </span>
                             </span>
-                        </label>
-                        <input id="ct_embedding_api_key" class="text_pole" type="password" placeholder="Leave empty if not required" />
+                            <span id="ct_score_threshold_display" class="ct_setting_value">0.30</span>
+                        </div>
+                        <input id="ct_score_threshold" class="ct_compact_slider" type="range" min="0" max="1" step="0.05" value="0.3" />
+                    </div>
+
+                    <div class="ct_compact_setting">
+                        <div class="ct_setting_header">
+                            <span class="ct_setting_label">
+                                Position
+                                <span class="ct_tooltip">
+                                    <i class="fa-solid fa-circle-info ct_info_icon"></i>
+                                    <span class="ct_tooltip_text">Insert memories N messages from the end of chat.</span>
+                                </span>
+                            </span>
+                            <span id="ct_memory_position_display" class="ct_setting_value">2</span>
+                        </div>
+                        <input id="ct_memory_position" class="ct_compact_slider" type="range" min="1" max="30" value="2" />
+                    </div>
+
+                    <div class="ct_compact_setting">
+                        <div class="ct_setting_header">
+                            <span class="ct_setting_label">
+                                Exclude Recent
+                                <span class="ct_tooltip">
+                                    <i class="fa-solid fa-circle-info ct_info_icon"></i>
+                                    <span class="ct_tooltip_text">Don't retrieve memories from last N messages (already in context).</span>
+                                </span>
+                            </span>
+                            <span id="ct_retain_recent_display" class="ct_setting_value">5</span>
+                        </div>
+                        <input id="ct_retain_recent" class="ct_compact_slider" type="range" min="0" max="50" value="5" />
+                    </div>
+
+                    <div class="ct_compact_setting">
+                        <div class="ct_setting_header">
+                            <span class="ct_setting_label">
+                                Min Messages
+                                <span class="ct_tooltip">
+                                    <i class="fa-solid fa-circle-info ct_info_icon"></i>
+                                    <span class="ct_tooltip_text">Only retrieve memories after chat has this many messages.</span>
+                                </span>
+                            </span>
+                            <span id="ct_qdrant_min_messages_display" class="ct_setting_value">20</span>
+                        </div>
+                        <input id="ct_qdrant_min_messages" class="ct_compact_slider" type="range" min="0" max="100" step="5" value="20" />
+                    </div>
+
+                    <!-- Per-Message Vectorization -->
+                    <div class="ct_section_header">
+                        <i class="fa-solid fa-message"></i>
+                        <span>Vectorization</span>
                     </div>
 
                     <div class="ct_compact_input">
@@ -646,12 +683,6 @@
                             </span>
                         </label>
                         <input id="ct_embedding_dimensions" class="text_pole" type="number" min="1" step="1" placeholder="Auto" />
-                    </div>
-
-                    <!-- Per-Message Vectorization -->
-                    <div class="ct_section_header">
-                        <i class="fa-solid fa-message"></i>
-                        <span>Vectorization</span>
                     </div>
 
                     <div class="ct_compact_setting">
@@ -693,40 +724,6 @@
                             <i class="fa-solid fa-circle-info ct_info_icon"></i>
                             <span class="ct_tooltip_text">Each chat gets its own collection (recommended).</span>
                         </span>
-                    </div>
-
-                    <!-- Additional Retrieval Settings -->
-                    <div class="ct_section_header">
-                        <i class="fa-solid fa-filter"></i>
-                        <span>Retrieval Filters</span>
-                    </div>
-
-                    <div class="ct_compact_setting">
-                        <div class="ct_setting_header">
-                            <span class="ct_setting_label">
-                                Exclude Recent
-                                <span class="ct_tooltip">
-                                    <i class="fa-solid fa-circle-info ct_info_icon"></i>
-                                    <span class="ct_tooltip_text">Don't retrieve memories from last N messages (already in context).</span>
-                                </span>
-                            </span>
-                            <span id="ct_retain_recent_display" class="ct_setting_value">5</span>
-                        </div>
-                        <input id="ct_retain_recent" class="ct_compact_slider" type="range" min="0" max="50" value="5" />
-                    </div>
-
-                    <div class="ct_compact_setting">
-                        <div class="ct_setting_header">
-                            <span class="ct_setting_label">
-                                Min Messages
-                                <span class="ct_tooltip">
-                                    <i class="fa-solid fa-circle-info ct_info_icon"></i>
-                                    <span class="ct_tooltip_text">Only retrieve memories after chat has this many messages.</span>
-                                </span>
-                            </span>
-                            <span id="ct_qdrant_min_messages_display" class="ct_setting_value">20</span>
-                        </div>
-                        <input id="ct_qdrant_min_messages" class="ct_compact_slider" type="range" min="0" max="100" step="5" value="20" />
                     </div>
 
                     <div class="ct_compact_checkbox">
@@ -799,34 +796,6 @@
                         <i class="fa-solid fa-circle-info ct_info_icon"></i>
                         <span class="ct_tooltip_text">Adjust truncation target to account for injected Qdrant memories. Prevents context overflow.</span>
                     </span>
-                </div>
-
-                <hr class="ct_section_divider">
-
-                <!-- How Synergy Works (Collapsible) -->
-                <div class="ct_advanced_toggle" id="ct_synergy_info_toggle">
-                    <span><i class="fa-solid fa-lightbulb"></i> How Synergy Works</span>
-                    <i class="fa-solid fa-chevron-down"></i>
-                </div>
-                <div class="ct_advanced_content" id="ct_synergy_info_content" style="display: none;">
-                    <div class="ct_info_list">
-                        <div class="ct_info_item">
-                            <i class="fa-solid fa-1 ct_info_number"></i>
-                            <span>Qdrant memories are retrieved based on current conversation</span>
-                        </div>
-                        <div class="ct_info_item">
-                            <i class="fa-solid fa-2 ct_info_number"></i>
-                            <span>If token accounting is enabled, truncation adjusts for memory size</span>
-                        </div>
-                        <div class="ct_info_item">
-                            <i class="fa-solid fa-3 ct_info_number"></i>
-                            <span>Summaries can optionally be indexed to Qdrant for semantic search</span>
-                        </div>
-                        <div class="ct_info_item">
-                            <i class="fa-solid fa-4 ct_info_number"></i>
-                            <span>Memory-aware summarization uses long-term context for better summaries</span>
-                        </div>
-                    </div>
                 </div>
 
                 <hr class="ct_section_divider">

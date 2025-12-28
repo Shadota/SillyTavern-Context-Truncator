@@ -683,15 +683,13 @@ function update_resilience_ui() {
     const countText = `${DELETION_COUNT}/${DELETION_TOLERANCE}`;
     $count.text(countText);
     
-    // Color coding
+    // Color coding: white by default, red only at tolerance-1 (about to trigger)
     $count.removeClass('ct_text_green ct_text_yellow ct_text_red');
-    if (DELETION_COUNT === 0) {
-        $count.addClass('ct_text_green');
-    } else if (DELETION_COUNT < DELETION_TOLERANCE) {
-        $count.addClass('ct_text_yellow');
-    } else {
+    if (DELETION_COUNT >= DELETION_TOLERANCE - 1) {
+        // At or above tolerance-1 = red (about to trigger recalibration)
         $count.addClass('ct_text_red');
     }
+    // Otherwise default white text (no class needed)
 }
 
 function should_recalculate_truncation() {
@@ -1592,18 +1590,25 @@ function update_calibration_ui() {
 // ==================== OVERVIEW TAB FUNCTIONS ====================
 
 // Calculate World Rules tokens from raw prompt
-// World Rules are bounded by "## Lore:" and "## {{user}}'s Persona:"
+// World Rules are bounded by "## Lore:" and "## {{user}}'s Persona:" (flexible matching)
 function calculate_world_rules_tokens(raw_prompt) {
     if (!raw_prompt) return 0;
     
-    const startMarker = '## Lore:';
-    const endMarker = "## {{user}}'s Persona:";
+    // Use flexible regex patterns to handle variations in spacing/formatting
+    const lorePattern = /##\s*Lore:/i;
+    const personaPattern = /##\s*\{\{user\}\}'s Persona:/i;
     
-    const startIndex = raw_prompt.indexOf(startMarker);
-    if (startIndex === -1) return 0;
+    const loreMatch = raw_prompt.match(lorePattern);
+    if (!loreMatch) return 0;
     
-    const endIndex = raw_prompt.indexOf(endMarker, startIndex);
-    if (endIndex === -1) return 0;
+    const startIndex = loreMatch.index;
+    
+    // Search for persona marker after the lore marker
+    const afterLore = raw_prompt.substring(startIndex);
+    const personaMatch = afterLore.match(personaPattern);
+    if (!personaMatch) return 0;
+    
+    const endIndex = startIndex + personaMatch.index;
     
     const worldRulesSection = raw_prompt.substring(startIndex, endIndex);
     return count_tokens(worldRulesSection);
@@ -2496,6 +2501,7 @@ class SummaryQueue {
     constructor() {
         this.queue = [];
         this.active = false;
+        this.stopped = false;
     }
     
     async summarize(indexes) {
@@ -2503,24 +2509,59 @@ class SummaryQueue {
             indexes = [indexes];
         }
         
+        // Reset stopped flag when starting new summarization
+        this.stopped = false;
+        
         for (let index of indexes) {
             this.queue.push(index);
         }
+        
+        // Show stop button, hide summarize button
+        this.updateStopButtonVisibility(true);
         
         if (!this.active) {
             await this.process();
         }
     }
     
+    // Stop the summarization queue
+    stop() {
+        if (!this.active) return;
+        
+        this.stopped = true;
+        this.queue = [];
+        
+        debug('Summarization queue stopped by user');
+        toastr.warning('Summarization stopped', MODULE_NAME_FANCY);
+    }
+    
+    // Update stop button visibility
+    updateStopButtonVisibility(showStop) {
+        if (showStop) {
+            $('#ct_stop_summarize, #ct_ov_stop_summarize').show();
+            $('#ct_summarize_all, #ct_ov_summarize').hide();
+        } else {
+            $('#ct_stop_summarize, #ct_ov_stop_summarize').hide();
+            $('#ct_summarize_all, #ct_ov_summarize').show();
+        }
+    }
+    
     async process() {
         this.active = true;
         
-        while (this.queue.length > 0) {
+        while (this.queue.length > 0 && !this.stopped) {
             const index = this.queue.shift();
             await this.summarize_message(index);
+            
+            // Update stats display after each message
+            update_summary_stats_display();
         }
         
         this.active = false;
+        this.stopped = false;
+        
+        // Hide stop button, show summarize button
+        this.updateStopButtonVisibility(false);
     }
     
     async summarize_message(index) {
@@ -2799,6 +2840,11 @@ function initialize_ui_listeners() {
         }
     });
     
+    // Stop summarize button
+    $('#ct_stop_summarize').on('click', () => {
+        summaryQueue.stop();
+    });
+    
     // ==================== AUTO-CALIBRATION SETTINGS ====================
     
     // Auto-calibrate toggle
@@ -2905,6 +2951,11 @@ function initialize_ui_listeners() {
         } else {
             toastr.info('All messages already summarized', MODULE_NAME_FANCY);
         }
+    });
+    
+    // Stop summarize button (Overview tab)
+    $('#ct_ov_stop_summarize').on('click', () => {
+        summaryQueue.stop();
     });
     
     // Overview memory panel toggle

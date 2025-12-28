@@ -105,6 +105,7 @@ Recent chat always takes precedence over these notes.
     score_threshold: 0.3,
     memory_position: 3,
     retain_recent_messages: 5,
+    qdrant_min_messages: 20,  // Only retrieve memories after this many messages in chat
     
     // Auto-save settings
     auto_save_memories: true,
@@ -112,10 +113,15 @@ Recent chat always takes precedence over these notes.
     save_char_messages: true,
     per_chat_collection: true,
     
-    // Chunking settings (from st-qdrant-memory)
+    // Chunking settings (DEPRECATED - kept for backwards compatibility)
     chunk_min_size: 1200,
     chunk_max_size: 1500,
     chunk_timeout: 30000,
+    
+    // Per-message vectorization settings (NEW - replaces chunking)
+    vectorization_delay: 2,           // Don't vectorize messages within N positions from end
+    delete_on_message_delete: true,   // Delete Qdrant entries when messages are deleted
+    auto_dedupe: true,                // Automatically remove duplicate entries during search
     
     // ==================== SYNERGY SETTINGS ====================
     use_summaries_for_qdrant: false,
@@ -128,12 +134,13 @@ let TRUNCATION_INDEX = null;  // Current truncation position
 
 // Popout state
 let POPOUT_VISIBLE = false;
+let POPOUT_LOCKED = false;
 let $POPOUT = null;
 let $DRAWER_CONTENT = null;
 
 // Calibration state machine
-// States: INITIAL_TRAINING -> CALIBRATING -> RETRAINING -> STABLE
-let CALIBRATION_STATE = 'INITIAL_TRAINING';
+// States: WAITING -> INITIAL_TRAINING -> CALIBRATING -> RETRAINING -> STABLE
+let CALIBRATION_STATE = 'WAITING';
 let GENERATION_COUNT = 0;      // Generations in current phase
 let STABLE_COUNT = 0;          // Consecutive stable generations
 let RETRAIN_COUNT = 0;         // Generations in retraining phase
@@ -143,6 +150,12 @@ const STABLE_THRESHOLD = 5;      // Consecutive stable gens to reach STABLE stat
 // Qdrant token averaging for variance handling
 let QDRANT_TOKEN_HISTORY = [];  // Rolling history of Qdrant injection tokens
 const QDRANT_HISTORY_SIZE = 5;  // Number of samples to average
+
+// Message change resilience (deletion/edit tracking)
+let DELETION_COUNT = 0;           // Number of impactful deletions since last calibration checkpoint
+let LAST_CHAT_LENGTH = 0;         // Track chat length to detect deletions
+let LAST_CHAT_HASHES = new Map(); // Map of message index -> content hash for edit detection
+const DELETION_TOLERANCE = 3;     // Max deletions before soft recalibration
 
 // Utility functions
 function log(...args) {
@@ -438,6 +451,26 @@ function load_truncation_index() {
         CHAT_TOKEN_CORRECTION_FACTOR = chat_metadata[MODULE_NAME].correction_factor;
         debug(`Loaded correction factor: ${CHAT_TOKEN_CORRECTION_FACTOR.toFixed(3)}`);
     }
+    
+    // Load calibration state for persistence across chat switches
+    if (chat_metadata?.[MODULE_NAME]?.calibration_state !== undefined) {
+        CALIBRATION_STATE = chat_metadata[MODULE_NAME].calibration_state;
+        GENERATION_COUNT = chat_metadata[MODULE_NAME].generation_count || 0;
+        STABLE_COUNT = chat_metadata[MODULE_NAME].stable_count || 0;
+        RETRAIN_COUNT = chat_metadata[MODULE_NAME].retrain_count || 0;
+        DELETION_COUNT = chat_metadata[MODULE_NAME].deletion_count || 0;
+        QDRANT_TOKEN_HISTORY = chat_metadata[MODULE_NAME].qdrant_token_history || [];
+        debug(`Loaded calibration state: ${CALIBRATION_STATE}, stable: ${STABLE_COUNT}/${STABLE_THRESHOLD}`);
+    } else {
+        // Reset to defaults for new chats without saved state
+        CALIBRATION_STATE = 'WAITING';
+        GENERATION_COUNT = 0;
+        STABLE_COUNT = 0;
+        RETRAIN_COUNT = 0;
+        DELETION_COUNT = 0;
+        QDRANT_TOKEN_HISTORY = [];
+        debug(`No calibration state found, reset to WAITING`);
+    }
 }
 
 function save_truncation_index() {
@@ -447,7 +480,16 @@ function save_truncation_index() {
     chat_metadata[MODULE_NAME].truncation_index = TRUNCATION_INDEX;
     chat_metadata[MODULE_NAME].target_size = get_settings('target_context_size');
     chat_metadata[MODULE_NAME].correction_factor = CHAT_TOKEN_CORRECTION_FACTOR;
-    debug(`Saved truncation index: ${TRUNCATION_INDEX}, correction factor: ${CHAT_TOKEN_CORRECTION_FACTOR.toFixed(3)}`);
+    
+    // Save calibration state for persistence across chat switches
+    chat_metadata[MODULE_NAME].calibration_state = CALIBRATION_STATE;
+    chat_metadata[MODULE_NAME].generation_count = GENERATION_COUNT;
+    chat_metadata[MODULE_NAME].stable_count = STABLE_COUNT;
+    chat_metadata[MODULE_NAME].retrain_count = RETRAIN_COUNT;
+    chat_metadata[MODULE_NAME].deletion_count = DELETION_COUNT;
+    chat_metadata[MODULE_NAME].qdrant_token_history = QDRANT_TOKEN_HISTORY;
+    
+    debug(`Saved truncation index: ${TRUNCATION_INDEX}, correction factor: ${CHAT_TOKEN_CORRECTION_FACTOR.toFixed(3)}, state: ${CALIBRATION_STATE}`);
     saveMetadataDebounced();
 }
 
@@ -458,6 +500,196 @@ function reset_truncation_index() {
     // The correction factor is learned over time and should persist across
     // target size changes to maintain calibration stability
     save_truncation_index();
+}
+
+// ==================== MESSAGE CHANGE RESILIENCE ====================
+
+// Compute a hash for message content (for edit detection)
+function compute_message_hash(message) {
+    if (!message || !message.mes) return null;
+    return getStringHash(message.mes);
+}
+
+// Take a snapshot of current chat state for change detection
+function snapshot_chat_state() {
+    const ctx = getContext();
+    const chat = ctx.chat;
+    
+    if (!chat) {
+        LAST_CHAT_LENGTH = 0;
+        LAST_CHAT_HASHES.clear();
+        return;
+    }
+    
+    LAST_CHAT_LENGTH = chat.length;
+    LAST_CHAT_HASHES.clear();
+    
+    for (let i = 0; i < chat.length; i++) {
+        const hash = compute_message_hash(chat[i]);
+        if (hash) {
+            LAST_CHAT_HASHES.set(i, hash);
+        }
+    }
+    
+    debug_trunc(`Snapshot taken: ${chat.length} messages, ${LAST_CHAT_HASHES.size} hashes`);
+}
+
+// Handle message deletion with smart truncation adjustment
+function handle_message_deleted() {
+    const ctx = getContext();
+    const chat = ctx.chat;
+    const currentLength = chat ? chat.length : 0;
+    const deletedCount = LAST_CHAT_LENGTH - currentLength;
+    
+    if (deletedCount <= 0) {
+        // No deletion detected or chat grew
+        LAST_CHAT_LENGTH = currentLength;
+        return;
+    }
+    
+    debug_trunc(`═══ MESSAGE DELETION DETECTED ═══`);
+    debug_trunc(`  Deleted: ${deletedCount} message(s)`);
+    debug_trunc(`  Previous length: ${LAST_CHAT_LENGTH}, Current: ${currentLength}`);
+    
+    // Determine deletion location relative to truncation index
+    let deletionsBeforeTruncation = 0;
+    let deletionsAfterTruncation = 0;
+    
+    if (TRUNCATION_INDEX !== null && TRUNCATION_INDEX > 0) {
+        // Detect where deletions occurred using hash comparison
+        const oldHash = LAST_CHAT_HASHES.get(TRUNCATION_INDEX);
+        const newMessage = chat[TRUNCATION_INDEX];
+        const newHash = newMessage ? compute_message_hash(newMessage) : null;
+        
+        if (TRUNCATION_INDEX >= currentLength) {
+            // Truncation index is beyond current chat = deletions were before/at it
+            deletionsBeforeTruncation = deletedCount;
+            TRUNCATION_INDEX = Math.max(0, currentLength - 1);
+            debug_trunc(`  Truncation index adjusted to ${TRUNCATION_INDEX} (beyond chat)`);
+        } else if (oldHash && newHash && oldHash !== newHash) {
+            // Message at truncation point changed = deletion was before it
+            deletionsBeforeTruncation = deletedCount;
+            TRUNCATION_INDEX = Math.max(0, TRUNCATION_INDEX - deletedCount);
+            debug_trunc(`  Truncation index adjusted to ${TRUNCATION_INDEX} (hash mismatch)`);
+        } else {
+            // Hash at truncation point is same = deletions were after it
+            deletionsAfterTruncation = deletedCount;
+            debug_trunc(`  Deletions were after truncation point - no index adjustment`);
+        }
+    } else {
+        // No truncation yet, all deletions are "after" (in recent context)
+        deletionsAfterTruncation = deletedCount;
+    }
+    
+    debug_trunc(`  Deletions before truncation: ${deletionsBeforeTruncation}`);
+    debug_trunc(`  Deletions after truncation: ${deletionsAfterTruncation}`);
+    
+    // Only count deletions that affect calibration (before/at truncation point)
+    // Deletions after truncation point are "free" - they don't destabilize anything
+    const impactfulDeletions = deletionsBeforeTruncation;
+    
+    if (impactfulDeletions > 0) {
+        DELETION_COUNT += impactfulDeletions;
+        debug_trunc(`  Impactful deletion count: ${DELETION_COUNT}/${DELETION_TOLERANCE}`);
+    } else {
+        debug_trunc(`  No impactful deletions (all were in recent context)`);
+    }
+    
+    // Check if tolerance exceeded
+    if (DELETION_COUNT >= DELETION_TOLERANCE) {
+        trigger_soft_recalibration('deletion tolerance exceeded');
+    }
+    
+    // Save updated truncation index
+    save_truncation_index();
+    
+    // Update snapshot
+    snapshot_chat_state();
+    
+    // Update UI
+    update_resilience_ui();
+    
+    // Refresh memory
+    refresh_memory();
+    
+    debug_trunc(`═══════════════════════════════`);
+}
+
+// Trigger soft recalibration (preserves correction factor)
+function trigger_soft_recalibration(reason) {
+    debug_trunc(`Triggering soft recalibration: ${reason}`);
+    
+    // Don't go back to WAITING or INITIAL_TRAINING
+    // Just reset to CALIBRATING to preserve learned correction factor
+    if (CALIBRATION_STATE === 'STABLE' || CALIBRATION_STATE === 'CALIBRATING') {
+        CALIBRATION_STATE = 'CALIBRATING';
+        STABLE_COUNT = 0;
+        DELETION_COUNT = 0;
+        
+        toastr.warning(
+            `Calibration reset due to ${reason}. Re-stabilizing...`,
+            MODULE_NAME_FANCY
+        );
+    } else if (CALIBRATION_STATE === 'RETRAINING') {
+        // Already retraining, just reset counter
+        DELETION_COUNT = 0;
+    }
+    // If WAITING or INITIAL_TRAINING, don't interrupt - these are essential
+    
+    update_calibration_ui();
+    update_resilience_ui();
+}
+
+// Detect message edits by comparing hashes
+function detect_message_edits() {
+    const ctx = getContext();
+    const chat = ctx.chat;
+    
+    if (!chat) return;
+    
+    let editCount = 0;
+    
+    for (let i = 0; i < Math.min(chat.length, LAST_CHAT_LENGTH); i++) {
+        const oldHash = LAST_CHAT_HASHES.get(i);
+        const newHash = compute_message_hash(chat[i]);
+        
+        if (oldHash && newHash && oldHash !== newHash) {
+            editCount++;
+            debug_trunc(`Edit detected at message ${i}`);
+            
+            // Mark summary as stale if message was lagging (excluded from context)
+            const message = chat[i];
+            if (get_data(message, 'lagging') && get_memory(message)) {
+                set_data(message, 'needs_summary', true);
+                debug_trunc(`Marked message ${i} for re-summarization`);
+            }
+        }
+    }
+    
+    if (editCount > 0) {
+        debug_trunc(`Total edits detected: ${editCount}`);
+    }
+    
+    // Update snapshot after detection
+    snapshot_chat_state();
+}
+
+// Update resilience UI (deletion counter display)
+function update_resilience_ui() {
+    const $count = $('#ct_ov_deletion_count');
+    
+    if ($count.length === 0) return;
+    
+    const countText = `${DELETION_COUNT}/${DELETION_TOLERANCE}`;
+    $count.text(countText);
+    
+    // Color coding: white by default, red only at tolerance-1 (about to trigger)
+    $count.removeClass('ct_text_green ct_text_yellow ct_text_red');
+    if (DELETION_COUNT >= DELETION_TOLERANCE - 1) {
+        // At or above tolerance-1 = red (about to trigger recalibration)
+        $count.addClass('ct_text_red');
+    }
+    // Otherwise default white text (no class needed)
 }
 
 function should_recalculate_truncation() {
@@ -1046,23 +1278,31 @@ function update_status_display() {
 
 // Reset calibration state
 function reset_calibration() {
-    CALIBRATION_STATE = 'INITIAL_TRAINING';
+    CALIBRATION_STATE = 'WAITING';
     GENERATION_COUNT = 0;
     STABLE_COUNT = 0;
     RETRAIN_COUNT = 0;
     CHAT_TOKEN_CORRECTION_FACTOR = 1.0;
     
-    debug('Calibration reset to INITIAL_TRAINING');
+    debug('Calibration reset to WAITING');
     update_calibration_ui();
     
-    toastr.info('Calibration reset - starting fresh training', MODULE_NAME_FANCY);
+    toastr.info('Calibration reset - will start when context threshold is reached', MODULE_NAME_FANCY);
 }
 
 // Auto-calibrate target context size based on actual usage
 function calibrate_target_size(actualSize) {
     const maxContext = getMaxContextSize();
     const targetUtilization = get_settings('target_utilization');
+    const autoCalibrate = get_settings('auto_calibrate_target');
     const idealTarget = Math.floor(maxContext * targetUtilization);
+    
+    // Calculate the threshold for when to start calibrating
+    // Use target_utilization * max_context if auto-calibration is enabled
+    // Otherwise use target_context_size as the threshold
+    const startThreshold = autoCalibrate
+        ? Math.floor(maxContext * targetUtilization)
+        : get_settings('target_context_size');
     
     // Update Qdrant token history for averaging (Fix 3.2)
     update_qdrant_token_history();
@@ -1079,6 +1319,7 @@ function calibrate_target_size(actualSize) {
     debug_trunc(`  Current state: ${CALIBRATION_STATE}`);
     debug_trunc(`  Max context: ${maxContext} tokens`);
     debug_trunc(`  Target utilization: ${(targetUtilization * 100).toFixed(1)}%`);
+    debug_trunc(`  Start threshold: ${startThreshold.toLocaleString()} tokens`);
     debug_trunc(`  Tolerance: ${(tolerance * 100).toFixed(1)}%`);
     debug_trunc(`  `);
     debug_trunc(`  Actual prompt: ${actualSize} tokens`);
@@ -1087,6 +1328,22 @@ function calibrate_target_size(actualSize) {
     debug_trunc(`  Within tolerance: ${deviation <= tolerance ? 'YES' : 'NO'}`);
     
     switch (CALIBRATION_STATE) {
+        case 'WAITING':
+            // Check if we've reached the threshold to start calibrating
+            debug_trunc(`  `);
+            if (actualSize < startThreshold) {
+                debug_trunc(`  Waiting: ${actualSize.toLocaleString()} tokens < threshold ${startThreshold.toLocaleString()} tokens`);
+                debug_trunc(`  → Remaining in WAITING`);
+            } else {
+                // Transition to INITIAL_TRAINING
+                CALIBRATION_STATE = 'INITIAL_TRAINING';
+                GENERATION_COUNT = 0;
+                debug_trunc(`  Threshold reached: ${actualSize.toLocaleString()} tokens >= ${startThreshold.toLocaleString()} tokens`);
+                debug_trunc(`  → Transitioning to INITIAL_TRAINING`);
+                toastr.info('Context threshold reached - starting calibration training', MODULE_NAME_FANCY);
+            }
+            break;
+            
         case 'INITIAL_TRAINING':
             // Wait for correction factor to stabilize
             GENERATION_COUNT++;
@@ -1114,8 +1371,10 @@ function calibrate_target_size(actualSize) {
                 
                 if (STABLE_COUNT >= STABLE_THRESHOLD) {
                     CALIBRATION_STATE = 'STABLE';
+                    DELETION_COUNT = 0;  // Reset deletion counter on reaching stable
                     debug_trunc(`  → Transitioning to STABLE`);
                     toastr.success(`Calibration complete! Target: ${get_settings('target_context_size').toLocaleString()} tokens`, MODULE_NAME_FANCY);
+                    update_resilience_ui();
                 } else {
                     debug_trunc(`  → Remaining in CALIBRATING`);
                 }
@@ -1286,9 +1545,19 @@ function update_calibration_ui() {
     $panel.show();
     
     // Update phase with color coding
-    $phase.removeClass('ct_phase_training ct_phase_calibrating ct_phase_retraining ct_phase_stable');
+    $phase.removeClass('ct_phase_waiting ct_phase_training ct_phase_calibrating ct_phase_retraining ct_phase_stable');
+    
+    const maxContext = getMaxContextSize();
+    const autoCalibrate = get_settings('auto_calibrate_target');
+    const startThreshold = autoCalibrate
+        ? Math.floor(maxContext * get_settings('target_utilization'))
+        : get_settings('target_context_size');
     
     switch (CALIBRATION_STATE) {
+        case 'WAITING':
+            $phase.text('Waiting').addClass('ct_phase_waiting');
+            $progress.text(`${LAST_ACTUAL_PROMPT_SIZE.toLocaleString()} / ${startThreshold.toLocaleString()} tokens`);
+            break;
         case 'INITIAL_TRAINING':
             $phase.text('Initial Training').addClass('ct_phase_training');
             $progress.text(`${GENERATION_COUNT}/${TRAINING_GENERATIONS} generations`);
@@ -1311,7 +1580,6 @@ function update_calibration_ui() {
     $target.text(`${get_settings('target_context_size').toLocaleString()} tokens`);
     
     if (LAST_ACTUAL_PROMPT_SIZE > 0) {
-        const maxContext = getMaxContextSize();
         const utilization = (LAST_ACTUAL_PROMPT_SIZE / maxContext * 100).toFixed(1);
         $utilization.text(`${utilization}%`);
     } else {
@@ -1320,6 +1588,31 @@ function update_calibration_ui() {
 }
 
 // ==================== OVERVIEW TAB FUNCTIONS ====================
+
+// Calculate World Rules tokens from raw prompt
+// World Rules are bounded by "## Lore:" and "## {{user}}'s Persona:" (flexible matching)
+function calculate_world_rules_tokens(raw_prompt) {
+    if (!raw_prompt) return 0;
+    
+    // Use flexible regex patterns to handle variations in spacing/formatting
+    const lorePattern = /##\s*Lore:/i;
+    const personaPattern = /##\s*\{\{user\}\}'s Persona:/i;
+    
+    const loreMatch = raw_prompt.match(lorePattern);
+    if (!loreMatch) return 0;
+    
+    const startIndex = loreMatch.index;
+    
+    // Search for persona marker after the lore marker
+    const afterLore = raw_prompt.substring(startIndex);
+    const personaMatch = afterLore.match(personaPattern);
+    if (!personaMatch) return 0;
+    
+    const endIndex = startIndex + personaMatch.index;
+    
+    const worldRulesSection = raw_prompt.substring(startIndex, endIndex);
+    return count_tokens(worldRulesSection);
+}
 
 // Update the Overview tab with current stats
 function update_overview_tab() {
@@ -1335,48 +1628,90 @@ function update_overview_tab() {
         const $gaugeFill = $('#ct_gauge_fill');
         $gaugeFill.css('width', `${Math.min(utilization, 100)}%`);
         
-        // Update gauge color based on utilization
+        // Update target marker position
+        const targetUtilization = get_settings('target_utilization');
+        $('#ct_gauge_target').css('left', `${targetUtilization * 100}%`);
+        
+        // Smart gauge color based on calibration state
         $gaugeFill.removeClass('ct_gauge_green ct_gauge_yellow ct_gauge_red');
-        if (utilization <= 80) {
+        
+        if (CALIBRATION_STATE === 'WAITING') {
+            // Waiting phase = always green (extension not active yet)
             $gaugeFill.addClass('ct_gauge_green');
-        } else if (utilization <= 90) {
-            $gaugeFill.addClass('ct_gauge_yellow');
         } else {
-            $gaugeFill.addClass('ct_gauge_red');
+            // Active phases - color based on deviation from target
+            const tolerance = get_settings('calibration_tolerance');
+            const targetPct = targetUtilization * 100;
+            const deviation = Math.abs(utilization - targetPct);
+            const tolerancePct = tolerance * 100;
+            
+            // Midpoint between target and tolerance boundary
+            const midpointDeviation = tolerancePct / 2;
+            
+            if (deviation <= midpointDeviation) {
+                // Within midpoint - green (close to target)
+                $gaugeFill.addClass('ct_gauge_green');
+            } else if (deviation <= tolerancePct) {
+                // Between midpoint and tolerance - yellow (slightly off)
+                $gaugeFill.addClass('ct_gauge_yellow');
+            } else {
+                // Beyond tolerance - red (significantly off)
+                $gaugeFill.addClass('ct_gauge_red');
+            }
         }
         
         // Update labels
         $('#ct_gauge_value').text(`${utilization.toFixed(1)}%`);
         $('#ct_gauge_max').text(`of ${maxContext.toLocaleString()} tokens`);
         
-        // Update Breakdown Bar
+        // Update Breakdown Bar (now includes World Rules)
         const segments = get_prompt_chat_segments_from_raw(last_raw_prompt);
         const chatTokens = segments ? segments.reduce((sum, seg) => sum + seg.tokenCount, 0) : 0;
-        const systemTokens = actualSize - chatTokens;  // Rough estimate
+        const worldRulesTokens = calculate_world_rules_tokens(last_raw_prompt);
         const summaryTokens = count_tokens(get_summary_injection());
         const qdrantTokens = get_qdrant_injection_tokens();
+        // System is everything else (total - chat - worldRules - summaries - qdrant)
+        const systemTokens = Math.max(0, actualSize - chatTokens - worldRulesTokens - summaryTokens - qdrantTokens);
         const freeTokens = Math.max(0, maxContext - actualSize);
         
         const chatPct = (chatTokens / maxContext * 100);
         const systemPct = (systemTokens / maxContext * 100);
+        const worldRulesPct = (worldRulesTokens / maxContext * 100);
         const summaryPct = (summaryTokens / maxContext * 100);
         const qdrantPct = (qdrantTokens / maxContext * 100);
         const freePct = (freeTokens / maxContext * 100);
         
         $('#ct_breakdown_chat').css('width', `${chatPct}%`);
         $('#ct_breakdown_system').css('width', `${systemPct}%`);
+        $('#ct_breakdown_worldrules').css('width', `${worldRulesPct}%`);
         $('#ct_breakdown_summaries').css('width', `${summaryPct}%`);
         $('#ct_breakdown_qdrant').css('width', `${qdrantPct}%`);
         $('#ct_breakdown_free').css('width', `${freePct}%`);
         
-        // Update Truncation Stats Card
+        // Update token counts in foldable section
+        $('#ct_breakdown_chat_tokens').text(`${chatTokens.toLocaleString()} tokens`);
+        $('#ct_breakdown_system_tokens').text(`${systemTokens.toLocaleString()} tokens`);
+        $('#ct_breakdown_worldrules_tokens').text(`${worldRulesTokens.toLocaleString()} tokens`);
+        $('#ct_breakdown_summaries_tokens').text(`${summaryTokens.toLocaleString()} tokens`);
+        $('#ct_breakdown_qdrant_tokens').text(`${qdrantTokens.toLocaleString()} tokens`);
+        $('#ct_breakdown_free_tokens').text(`${freeTokens.toLocaleString()} tokens`);
+        $('#ct_breakdown_total_tokens').html(`<strong>${actualSize.toLocaleString()} / ${maxContext.toLocaleString()} tokens</strong>`);
+        
+        // Update Truncation Stats Card (now simplified)
         const targetSize = get_settings('target_context_size');
         const difference = actualSize - targetSize;
         const percentError = Math.abs((difference / targetSize) * 100);
         
+        // Simplified context display (actual / target)
+        $('#ct_ov_actual_size_short').text(actualSize.toLocaleString());
+        $('#ct_ov_target_size_short').text(targetSize.toLocaleString());
+        
+        // Legacy element support (for any remaining references)
         $('#ct_ov_actual_size').text(`${actualSize.toLocaleString()} tokens`);
         $('#ct_ov_target_size').text(`${targetSize.toLocaleString()} tokens`);
-        $('#ct_ov_difference').text(`${difference > 0 ? '+' : ''}${difference.toLocaleString()} tokens`);
+        
+        // Advanced stats (in collapsible section)
+        $('#ct_ov_difference').text(`${difference > 0 ? '+' : ''}${difference.toLocaleString()}`);
         $('#ct_ov_error').text(`${percentError.toFixed(1)}%`);
         $('#ct_ov_trunc_index').text(TRUNCATION_INDEX !== null ? TRUNCATION_INDEX : '--');
         $('#ct_ov_correction').text(CHAT_TOKEN_CORRECTION_FACTOR.toFixed(3));
@@ -1393,7 +1728,17 @@ function update_overview_tab() {
         let phaseClass = '';
         let progressText = '--';
         
+        const autoCalibrate = get_settings('auto_calibrate_target');
+        const startThreshold = autoCalibrate
+            ? Math.floor(maxContext * get_settings('target_utilization'))
+            : get_settings('target_context_size');
+        
         switch (CALIBRATION_STATE) {
+            case 'WAITING':
+                phaseText = 'Waiting';
+                phaseClass = 'ct_phase_waiting';
+                progressText = `${LAST_ACTUAL_PROMPT_SIZE.toLocaleString()} / ${startThreshold.toLocaleString()}`;
+                break;
             case 'INITIAL_TRAINING':
                 phaseText = 'Initial Training';
                 phaseClass = 'ct_phase_training';
@@ -1416,7 +1761,7 @@ function update_overview_tab() {
                 break;
         }
         
-        $('#ct_ov_cal_phase').text(phaseText).removeClass('ct_phase_training ct_phase_calibrating ct_phase_retraining ct_phase_stable').addClass(phaseClass);
+        $('#ct_ov_cal_phase').text(phaseText).removeClass('ct_phase_waiting ct_phase_training ct_phase_calibrating ct_phase_retraining ct_phase_stable').addClass(phaseClass);
         $('#ct_ov_cal_progress').text(progressText);
         $('#ct_ov_cal_target').text(`${get_settings('target_context_size').toLocaleString()} tokens`);
         
@@ -1427,7 +1772,7 @@ function update_overview_tab() {
             $('#ct_ov_cal_util').text('-');
         }
     } else {
-        $('#ct_ov_cal_phase').text('Disabled').removeClass('ct_phase_training ct_phase_calibrating ct_phase_retraining ct_phase_stable');
+        $('#ct_ov_cal_phase').text('Disabled').removeClass('ct_phase_waiting ct_phase_training ct_phase_calibrating ct_phase_retraining ct_phase_stable');
         $('#ct_ov_cal_progress').text('--');
         $('#ct_ov_cal_target').text(`${get_settings('target_context_size').toLocaleString()} tokens`);
         $('#ct_ov_cal_util').text('-');
@@ -1558,6 +1903,20 @@ function get_calibration_prediction() {
     }
     
     switch (CALIBRATION_STATE) {
+        case 'WAITING':
+            const maxContext = getMaxContextSize();
+            const startThreshold = Math.floor(maxContext * get_settings('target_utilization'));
+            const tokensNeeded = startThreshold - LAST_ACTUAL_PROMPT_SIZE;
+            if (tokensNeeded > 0) {
+                return {
+                    text: `Waiting: ~${tokensNeeded.toLocaleString()} tokens until threshold`,
+                    class: 'ct_text_muted'
+                };
+            }
+            return {
+                text: 'Threshold reached - starting soon',
+                class: 'ct_text_yellow'
+            };
         case 'INITIAL_TRAINING':
             const trainingLeft = TRAINING_GENERATIONS - GENERATION_COUNT;
             return {
@@ -1741,14 +2100,16 @@ function openPopout() {
         $drawerHeader.trigger('click');
     }
     
-    // Create the popout element
+    // Create the popout element with reset size button
     $POPOUT = $(`
         <div id="ct_popout" class="draggable" style="display: none;">
             <div class="panelControlBar flex-container" id="ctPopoutHeader">
                 <div class="fa-solid fa-chart-pie" style="margin-right: 10px;"></div>
                 <div class="title">${MODULE_NAME_FANCY}</div>
                 <div class="flex1"></div>
+                <div class="fa-solid fa-arrows-left-right hoverglow dragReset" title="Reset to default size"></div>
                 <div class="fa-solid fa-grip drag-grabber hoverglow" title="Drag to move"></div>
+                <div class="fa-solid fa-lock-open hoverglow dragLock" title="Lock position"></div>
                 <div class="fa-solid fa-circle-xmark hoverglow dragClose" title="Close"></div>
             </div>
             <div id="ct_popout_content_container"></div>
@@ -1785,8 +2146,29 @@ function openPopout() {
     // Load saved position if available
     load_popout_position();
     
-    // Set up close button handler
+    // Set up button handlers
     $POPOUT.find('.dragClose').on('click', () => closePopout());
+    $POPOUT.find('.dragLock').on('click', () => togglePopoutLock());
+    $POPOUT.find('.dragReset').on('click', () => resetPopoutSize());
+    
+    // Set up ResizeObserver to track when user manually resizes
+    try {
+        const resizeObserver = new ResizeObserver(debounce((entries) => {
+            for (const entry of entries) {
+                // Mark that user has manually resized
+                $POPOUT.data('user-resized', true);
+                save_popout_position();
+                debug_trunc('Popout resized by user');
+            }
+        }, 250));
+        resizeObserver.observe($POPOUT[0]);
+        
+        // Store observer reference for cleanup
+        $POPOUT.data('resize-observer', resizeObserver);
+        debug_trunc('ResizeObserver attached to popout');
+    } catch (e) {
+        debug_trunc('ResizeObserver not available:', e);
+    }
     
     // Show the popout with animation
     $POPOUT.fadeIn(250);
@@ -1807,6 +2189,13 @@ function closePopout() {
     
     // Save position before closing
     save_popout_position();
+    
+    // Cleanup ResizeObserver
+    const resizeObserver = $currentPopout.data('resize-observer');
+    if (resizeObserver) {
+        resizeObserver.disconnect();
+        debug_trunc('ResizeObserver disconnected');
+    }
     
     $currentPopout.fadeOut(250, () => {
         const $drawer = $('#context_truncator_settings');
@@ -1833,6 +2222,34 @@ function closePopout() {
     debug_trunc('Popout closed');
 }
 
+// Toggle popout position lock
+function togglePopoutLock() {
+    if (!$POPOUT) return;
+    
+    POPOUT_LOCKED = !POPOUT_LOCKED;
+    update_lock_button_ui();
+    save_popout_position(); // Persist lock state immediately
+    
+    debug_trunc(`Popout position ${POPOUT_LOCKED ? 'locked' : 'unlocked'}`);
+}
+
+// Update the lock button UI state
+function update_lock_button_ui() {
+    if (!$POPOUT) return;
+    
+    const $button = $POPOUT.find('.dragLock');
+    
+    if (POPOUT_LOCKED) {
+        $button.removeClass('fa-lock-open').addClass('fa-lock locked');
+        $button.attr('title', 'Unlock position');
+        $POPOUT.addClass('position-locked');
+    } else {
+        $button.removeClass('fa-lock locked').addClass('fa-lock-open');
+        $button.attr('title', 'Lock position');
+        $POPOUT.removeClass('position-locked');
+    }
+}
+
 // Fallback drag implementation if SillyTavern's dragElement is not available
 function make_popout_draggable($element) {
     const $header = $element.find('#ctPopoutHeader');
@@ -1840,8 +2257,11 @@ function make_popout_draggable($element) {
     let startX, startY, initialX, initialY;
     
     $header.on('mousedown', (e) => {
-        // Don't drag if clicking on close button or other interactive elements
-        if ($(e.target).hasClass('dragClose') || $(e.target).hasClass('hoverglow')) {
+        // Don't drag if locked
+        if (POPOUT_LOCKED) return;
+        
+        // Don't drag if clicking on close button, lock button, or other interactive elements
+        if ($(e.target).hasClass('dragClose') || $(e.target).hasClass('dragLock') || $(e.target).hasClass('hoverglow')) {
             return;
         }
         
@@ -1891,6 +2311,7 @@ function make_popout_draggable($element) {
 }
 
 // Save popout position to localStorage
+// FIXED: Only saves width if user has manually resized the popout
 function save_popout_position() {
     if (!$POPOUT) return;
     
@@ -1898,7 +2319,9 @@ function save_popout_position() {
         left: $POPOUT.css('left'),
         top: $POPOUT.css('top'),
         right: $POPOUT.css('right'),
-        width: $POPOUT.css('width')
+        // Only save width if user has manually resized (avoids overriding CSS defaults)
+        width: $POPOUT.data('user-resized') ? $POPOUT.css('width') : null,
+        locked: POPOUT_LOCKED
     };
     
     localStorage.setItem('ct_popout_position', JSON.stringify(position));
@@ -1919,14 +2342,36 @@ function load_popout_position() {
                 top: position.top || 'var(--topBarBlockSize, 50px)',
                 right: position.right || 'auto'
             });
+            
+            // Only apply saved width if it exists (user previously resized)
             if (position.width) {
                 $POPOUT.css('width', position.width);
+                $POPOUT.data('user-resized', true);
             }
+            
+            // Restore lock state
+            if (position.locked !== undefined) {
+                POPOUT_LOCKED = position.locked;
+                update_lock_button_ui();
+            }
+            
             debug_trunc('Popout position loaded:', position);
         } catch (e) {
             debug_trunc('Failed to load popout position:', e);
         }
     }
+}
+
+// Reset popout size to CSS default
+function resetPopoutSize() {
+    if (!$POPOUT) return;
+    
+    $POPOUT.css('width', '');  // Remove inline width, use CSS default
+    $POPOUT.data('user-resized', false);
+    save_popout_position();
+    
+    toastr.info('Popout size reset to default', MODULE_NAME_FANCY);
+    debug_trunc('Popout size reset to default');
 }
 
 // Update the popout toggle button appearance
@@ -1944,6 +2389,7 @@ function update_popout_button_state() {
 }
 
 // Add popout toggle button to the drawer header
+// FIXED: Uses minimal insertion to preserve SillyTavern's drawer toggle functionality
 function add_popout_button() {
     const $header = $('#context_truncator_settings .inline-drawer-header');
     if ($header.length === 0) {
@@ -1966,55 +2412,34 @@ function add_popout_button() {
         </i>
     `);
     
-    // Style the button
+    // Style the button (positioned with margin-left: auto to push to right)
     $button.css({
-        'margin-left': '5px',
+        'margin-left': 'auto',
+        'margin-right': '10px',
         'display': 'inline-flex',
         'vertical-align': 'middle',
         'cursor': 'pointer',
         'font-size': '1em'
     });
     
-    // Click handler
+    // Click handler with stopPropagation to prevent drawer toggle
     $button.on('click', (event) => {
-        togglePopout();
         event.stopPropagation();
+        event.preventDefault();
+        togglePopout();
     });
     
-    // Fix header layout for proper flex display
-    $header.css({
-        'display': 'flex',
-        'align-items': 'center',
-        'justify-content': 'space-between'
-    });
-    
-    // Find the title (b tag) and style it
-    const $title = $header.find('b');
-    $title.css({
-        'flex': '0 1 auto',
-        'white-space': 'nowrap',
-        'overflow': 'hidden',
-        'text-overflow': 'ellipsis'
-    });
-    
-    // Create a flex wrapper for the icon
-    const $iconWrapper = $('<div class="ct_header_controls"></div>');
-    $iconWrapper.css({
-        'display': 'flex',
-        'align-items': 'center',
-        'gap': '5px'
-    });
-    
-    // Move the chevron icon to the wrapper
+    // SIMPLE INSERTION: Insert button BEFORE the chevron icon
+    // This avoids detaching/restructuring anything and preserves SillyTavern's event handlers
     const $chevron = $header.find('.inline-drawer-icon');
-    $chevron.detach();
-    $iconWrapper.append($button);
-    $iconWrapper.append($chevron);
+    if ($chevron.length > 0) {
+        $button.insertBefore($chevron);
+    } else {
+        // Fallback: append to header
+        $header.append($button);
+    }
     
-    // Add wrapper to header
-    $header.append($iconWrapper);
-    
-    debug_trunc('Popout button added to header');
+    debug_trunc('Popout button added to header (minimal insertion)');
 }
 
 // ==================== MEMORY DISPLAY ====================
@@ -2076,6 +2501,7 @@ class SummaryQueue {
     constructor() {
         this.queue = [];
         this.active = false;
+        this.stopped = false;
     }
     
     async summarize(indexes) {
@@ -2083,24 +2509,59 @@ class SummaryQueue {
             indexes = [indexes];
         }
         
+        // Reset stopped flag when starting new summarization
+        this.stopped = false;
+        
         for (let index of indexes) {
             this.queue.push(index);
         }
+        
+        // Show stop button, hide summarize button
+        this.updateStopButtonVisibility(true);
         
         if (!this.active) {
             await this.process();
         }
     }
     
+    // Stop the summarization queue
+    stop() {
+        if (!this.active) return;
+        
+        this.stopped = true;
+        this.queue = [];
+        
+        debug('Summarization queue stopped by user');
+        toastr.warning('Summarization stopped', MODULE_NAME_FANCY);
+    }
+    
+    // Update stop button visibility
+    updateStopButtonVisibility(showStop) {
+        if (showStop) {
+            $('#ct_stop_summarize, #ct_ov_stop_summarize').show();
+            $('#ct_summarize_all, #ct_ov_summarize').hide();
+        } else {
+            $('#ct_stop_summarize, #ct_ov_stop_summarize').hide();
+            $('#ct_summarize_all, #ct_ov_summarize').show();
+        }
+    }
+    
     async process() {
         this.active = true;
         
-        while (this.queue.length > 0) {
+        while (this.queue.length > 0 && !this.stopped) {
             const index = this.queue.shift();
             await this.summarize_message(index);
+            
+            // Update stats display after each message
+            update_summary_stats_display();
         }
         
         this.active = false;
+        this.stopped = false;
+        
+        // Hide stop button, show summarize button
+        this.updateStopButtonVisibility(false);
     }
     
     async summarize_message(index) {
@@ -2203,25 +2664,40 @@ function register_event_listeners() {
     eventSource.on(event_types.CHAT_CHANGED, () => {
         const newChatId = ctx.chatId;
         if (currentChatId !== null && currentChatId !== newChatId) {
-            debug('Chat switched, loading truncation index');
+            debug('Chat switched, loading truncation index and calibration state');
             TRUNCATION_INDEX = null;
-            // Fix 4.2: Don't reset correction factor here - load_truncation_index will load the saved one
-            // CHAT_TOKEN_CORRECTION_FACTOR = 1.0;  // REMOVED - this was destroying learned calibration
+            // load_truncation_index() now loads ALL calibration state from chat_metadata:
+            // - truncation_index, correction_factor
+            // - calibration_state, generation_count, stable_count, retrain_count
+            // - deletion_count, qdrant_token_history
             load_truncation_index();
             
-            // Clear Qdrant memories and history for new chat
+            // Clear Qdrant memories for new chat (these are transient, not persisted)
             CURRENT_QDRANT_MEMORIES = [];
             CURRENT_QDRANT_INJECTION = '';
-            QDRANT_TOKEN_HISTORY = [];  // Reset Qdrant token history for new chat
+            // NOTE: QDRANT_TOKEN_HISTORY and DELETION_COUNT are now loaded from chat_metadata
+            // by load_truncation_index() - no manual reset needed
         }
         currentChatId = newChatId;
+        
+        // Initialize chat snapshot for deletion/edit detection
+        snapshot_chat_state();
+        
         refresh_memory();
+        update_resilience_ui();
+        
+        // Update UI with loaded state immediately (don't wait for generation)
+        update_overview_tab();
+        update_calibration_ui();
+        update_summary_stats_display();
     });
     
-    // Reset when messages deleted
+    // Smart handling of message deletions
     eventSource.on(event_types.MESSAGE_DELETED, () => {
-        reset_truncation_index();
-        refresh_memory();
+        handle_message_deleted();
+        
+        // Also handle Qdrant message deletion sync
+        handle_qdrant_message_deleted();
     });
     
     // Auto-summarize and auto-buffer on new character messages
@@ -2240,6 +2716,9 @@ function register_event_listeners() {
             }
         }
         
+        // Vectorize delayed messages that are now outside the delay window
+        vectorize_delayed_messages();
+        
         // Delay status update to ensure itemizedPrompts is populated
         setTimeout(() => update_status_display(), 100);
     });
@@ -2257,6 +2736,9 @@ function register_event_listeners() {
                 buffer_message(id, message.mes, true);  // true = user message
             }
         }
+        
+        // Vectorize delayed messages that are now outside the delay window
+        vectorize_delayed_messages();
         
         // Delay status update to ensure itemizedPrompts is populated
         setTimeout(() => update_status_display(), 100);
@@ -2305,17 +2787,15 @@ function initialize_ui_listeners() {
     // ==================== TRUNCATION SETTINGS ====================
     bind_setting('#ct_enabled', 'enabled', 'boolean');
     bind_setting('#ct_target_size', 'target_context_size', 'number');
-    bind_setting('#ct_min_keep', 'min_messages_to_keep', 'number');
     bind_setting('#ct_auto_summarize', 'auto_summarize', 'boolean');
     bind_setting('#ct_connection_profile', 'connection_profile', 'text');
-    bind_setting('#ct_max_words', 'summary_max_words', 'number');
     
     // Per-module debug settings
     bind_setting('#ct_debug_truncation', 'debug_truncation', 'boolean');
     
-    // Batch size - reset truncation when changed
-    $('#ct_batch_size').val(get_settings('batch_size'));
-    $('#ct_batch_size').on('change', function() {
+    // Batch size (now a slider) - reset truncation when changed
+    bind_range_setting('#ct_batch_size', 'batch_size', '#ct_batch_size_display');
+    $('#ct_batch_size').off('change').on('change', function() {
         const value = Number($(this).val());
         debug(`Setting [batch_size] changed to [${value}]`);
         set_settings('batch_size', value);
@@ -2323,6 +2803,12 @@ function initialize_ui_listeners() {
         toastr.info('Batch size changed - truncation reset', MODULE_NAME_FANCY);
         refresh_memory();
     });
+    
+    // Min messages (now a slider)
+    bind_range_setting('#ct_min_keep', 'min_messages_to_keep', '#ct_min_keep_display');
+    
+    // Max words per summary (now a slider)
+    bind_range_setting('#ct_max_words', 'summary_max_words', '#ct_max_words_display');
     
     // Initialize connection profile dropdown
     update_connection_profile_dropdown();
@@ -2352,6 +2838,11 @@ function initialize_ui_listeners() {
         } else {
             toastr.info('All messages already summarized', MODULE_NAME_FANCY);
         }
+    });
+    
+    // Stop summarize button
+    $('#ct_stop_summarize').on('click', () => {
+        summaryQueue.stop();
     });
     
     // ==================== AUTO-CALIBRATION SETTINGS ====================
@@ -2399,12 +2890,18 @@ function initialize_ui_listeners() {
     bind_range_setting('#ct_score_threshold', 'score_threshold', '#ct_score_threshold_display', true);
     bind_range_setting('#ct_memory_position', 'memory_position', '#ct_memory_position_display');
     bind_range_setting('#ct_retain_recent', 'retain_recent_messages', '#ct_retain_recent_display');
+    bind_range_setting('#ct_qdrant_min_messages', 'qdrant_min_messages', '#ct_qdrant_min_messages_display');
     
     // Auto-save settings
     bind_setting('#ct_auto_save_memories', 'auto_save_memories', 'boolean');
     bind_setting('#ct_save_user_messages', 'save_user_messages', 'boolean');
     bind_setting('#ct_save_char_messages', 'save_char_messages', 'boolean');
     bind_setting('#ct_per_chat_collection', 'per_chat_collection', 'boolean');
+    
+    // Per-message vectorization settings (NEW)
+    bind_range_setting('#ct_vectorization_delay', 'vectorization_delay', '#ct_vectorization_delay_display');
+    bind_setting('#ct_delete_on_message_delete', 'delete_on_message_delete', 'boolean');
+    bind_setting('#ct_auto_dedupe', 'auto_dedupe', 'boolean');
     
     // Qdrant action buttons
     $('#ct_qdrant_test').on('click', test_qdrant_connection);
@@ -2456,6 +2953,11 @@ function initialize_ui_listeners() {
         }
     });
     
+    // Stop summarize button (Overview tab)
+    $('#ct_ov_stop_summarize').on('click', () => {
+        summaryQueue.stop();
+    });
+    
     // Overview memory panel toggle
     $('#ct_ov_memory_toggle').on('click', function() {
         const $content = $('#ct_ov_memory_list');
@@ -2467,6 +2969,105 @@ function initialize_ui_listeners() {
         } else {
             $content.slideDown(200);
             $(this).addClass('expanded');
+        }
+    });
+    
+    // ==================== TOKEN COUNTS TOGGLE ====================
+    $('#ct_breakdown_toggle').on('click', function() {
+        const $details = $('#ct_breakdown_details');
+        const isExpanded = $details.is(':visible');
+        
+        if (isExpanded) {
+            $details.slideUp(200);
+            $(this).removeClass('expanded');
+            $(this).find('span').text('Show Token Counts');
+        } else {
+            $details.slideDown(200);
+            $(this).addClass('expanded');
+            $(this).find('span').text('Hide Token Counts');
+        }
+    });
+    
+    // ==================== ADVANCED STATS TOGGLE (Overview) ====================
+    $('#ct_advanced_toggle').on('click', function() {
+        const $content = $('#ct_advanced_content');
+        const isExpanded = $content.is(':visible');
+        
+        if (isExpanded) {
+            $content.slideUp(200);
+            $(this).removeClass('expanded');
+        } else {
+            $content.slideDown(200);
+            $(this).addClass('expanded');
+        }
+    });
+    
+    // ==================== ADVANCED SETTINGS TOGGLE (Truncation Tab) ====================
+    $('#ct_trunc_advanced_toggle').on('click', function() {
+        const $content = $('#ct_trunc_advanced_content');
+        const isExpanded = $content.is(':visible');
+        
+        if (isExpanded) {
+            $content.slideUp(200);
+            $(this).removeClass('expanded');
+        } else {
+            $content.slideDown(200);
+            $(this).addClass('expanded');
+        }
+    });
+    
+    // ==================== ADVANCED SETTINGS TOGGLE (Qdrant Tab) ====================
+    $('#ct_qdrant_advanced_toggle').on('click', function() {
+        const $content = $('#ct_qdrant_advanced_content');
+        const isExpanded = $content.is(':visible');
+        
+        if (isExpanded) {
+            $content.slideUp(200);
+            $(this).removeClass('expanded');
+        } else {
+            $content.slideDown(200);
+            $(this).addClass('expanded');
+        }
+    });
+    
+    // ==================== SYNERGY TAB TOGGLES ====================
+    $('#ct_synergy_info_toggle').on('click', function() {
+        const $content = $('#ct_synergy_info_content');
+        const isExpanded = $content.is(':visible');
+        
+        if (isExpanded) {
+            $content.slideUp(200);
+            $(this).removeClass('expanded');
+        } else {
+            $content.slideDown(200);
+            $(this).addClass('expanded');
+        }
+    });
+    
+    $('#ct_synergy_advanced_toggle').on('click', function() {
+        const $content = $('#ct_synergy_advanced_content');
+        const isExpanded = $content.is(':visible');
+        
+        if (isExpanded) {
+            $content.slideUp(200);
+            $(this).removeClass('expanded');
+        } else {
+            $content.slideDown(200);
+            $(this).addClass('expanded');
+        }
+    });
+    
+    // ==================== FOLDABLE STATS CARDS ====================
+    $(document).on('click', '.ct_collapsible_toggle', function() {
+        const $card = $(this).closest('.ct_collapsible');
+        const isCollapsed = $card.attr('data-collapsed') === 'true';
+        
+        if (isCollapsed) {
+            $card.attr('data-collapsed', 'false');
+            $card.find('.ct_collapsible_content').slideDown(200);
+        } else {
+            $card.attr('data-collapsed', 'true');
+            $card.find('.ct_collapsible_content').slideUp(200);
         }
     });
     
@@ -3067,6 +3668,10 @@ async function search_memories(queryText, limit = null, scoreThreshold = null) {
     limit = limit ?? get_settings('memory_limit');
     scoreThreshold = scoreThreshold ?? get_settings('score_threshold');
     
+    // Request extra results if deduplication is enabled (to have enough after removing duplicates)
+    const autoDedupe = get_settings('auto_dedupe');
+    const requestLimit = autoDedupe ? limit * 2 : limit;
+    
     try {
         // Generate embedding for query
         const queryEmbedding = await generate_embedding(queryText);
@@ -3078,7 +3683,7 @@ async function search_memories(queryText, limit = null, scoreThreshold = null) {
         // Build search request
         const searchBody = {
             vector: queryEmbedding,
-            limit: limit,
+            limit: requestLimit,
             score_threshold: scoreThreshold,
             with_payload: true
         };
@@ -3095,21 +3700,64 @@ async function search_memories(queryText, limit = null, scoreThreshold = null) {
         }
         
         const data = await response.json();
-        const results = data.result || [];
+        let results = data.result || [];
         
         debug_qdrant(`Search returned ${results.length} results`);
         
-        return results.map(r => ({
-            id: r.id,
-            score: r.score,
-            text: r.payload.text,
-            messageIndexes: r.payload.message_indexes,
-            firstIndex: r.payload.first_index,
-            lastIndex: r.payload.last_index,
-            timestamp: r.payload.timestamp,
-            characterName: r.payload.character_name,
-            chatId: r.payload.chat_id
-        }));
+        // Detect and remove duplicates if enabled
+        if (autoDedupe && results.length > 0) {
+            const { uniqueResults, duplicateIds } = detect_duplicates(results);
+            
+            // Async delete duplicates (fire-and-forget)
+            if (duplicateIds.length > 0) {
+                delete_points_by_ids(duplicateIds).catch(e => {
+                    error('Failed to delete duplicate points:', e);
+                });
+                debug_qdrant(`Removing ${duplicateIds.length} duplicates, keeping ${uniqueResults.length} unique`);
+            }
+            
+            results = uniqueResults;
+        }
+        
+        // Limit to requested count after deduplication
+        results = results.slice(0, limit);
+        
+        // Map results to common format (handle both old chunked format and new per-message format)
+        return results.map(r => {
+            const payload = r.payload;
+            
+            // Check for new per-message format (message_index) vs old chunked format (message_indexes)
+            if (payload.message_index !== undefined) {
+                // New per-message format
+                return {
+                    id: r.id,
+                    score: r.score,
+                    text: payload.text,
+                    messageIndex: payload.message_index,
+                    messageHash: payload.message_hash,
+                    isUser: payload.is_user,
+                    // For backwards compatibility, also provide first/last index
+                    firstIndex: payload.message_index,
+                    lastIndex: payload.message_index,
+                    timestamp: payload.timestamp,
+                    characterName: payload.character_name,
+                    chatId: payload.chat_id
+                };
+            } else {
+                // Old chunked format
+                return {
+                    id: r.id,
+                    score: r.score,
+                    text: payload.text,
+                    messageIndexes: payload.message_indexes,
+                    firstIndex: payload.first_index,
+                    lastIndex: payload.last_index,
+                    timestamp: payload.timestamp,
+                    characterName: payload.character_name,
+                    chatId: payload.chat_id
+                };
+            }
+        });
         
     } catch (e) {
         error('Failed to search memories:', e);
@@ -3144,39 +3792,282 @@ async function get_collection_info() {
     }
 }
 
-// Add a message to the memory buffer
+// Add a message to the memory buffer (DEPRECATED - kept for backwards compatibility)
 function buffer_message(index, text, isUser) {
+    // Redirect to new per-message vectorization
+    vectorize_message(index, text, isUser);
+}
+
+// ==================== PER-MESSAGE VECTORIZATION (NEW) ====================
+
+// Vectorize a single message and store it in Qdrant
+async function vectorize_message(index, text, isUser) {
     if (!get_settings('qdrant_enabled')) return;
     if (!get_settings('auto_save_memories')) return;
     if (isUser && !get_settings('save_user_messages')) return;
     if (!isUser && !get_settings('save_char_messages')) return;
     
-    // SYNERGY: Use summaries for Qdrant if enabled and available
-    let textToBuffer = text;
+    const ctx = getContext();
+    const message = ctx.chat[index];
+    
+    if (!message) {
+        debug_qdrant(`Message ${index} not found, skipping vectorization`);
+        return;
+    }
+    
+    // Check if already vectorized
+    if (get_data(message, 'vectorized')) {
+        debug_qdrant(`Message ${index} already vectorized, skipping`);
+        return;
+    }
+    
+    // Check vectorization delay
+    const delay = get_settings('vectorization_delay');
+    if (index >= ctx.chat.length - delay) {
+        debug_qdrant(`Message ${index} within delay window (${delay}), skipping`);
+        return;
+    }
+    
+    // SYNERGY: Use summary if enabled and available
+    let textToVectorize = text;
     if (get_settings('use_summaries_for_qdrant')) {
-        const ctx = getContext();
-        const message = ctx.chat[index];
         const summary = get_memory(message);
         if (summary) {
-            textToBuffer = summary;
-            debug_synergy(`Using summary for Qdrant indexing (message ${index})`);
+            textToVectorize = summary;
+            debug_synergy(`Using summary for message ${index}`);
         }
     }
     
-    debug_qdrant(`Buffering message ${index}: ${textToBuffer.substring(0, 50)}...`);
+    try {
+        // Generate embedding
+        const embedding = await generate_embedding(textToVectorize);
+        
+        if (!embedding || embedding.length === 0) {
+            throw new Error('Failed to generate embedding');
+        }
+        
+        // Ensure collection exists
+        await ensure_collection_exists();
+        
+        // Create message hash for deduplication and deletion
+        const messageHash = getStringHash(text);
+        
+        // Create point
+        const point = {
+            id: generate_point_id(),
+            vector: embedding,
+            payload: {
+                message_index: index,
+                message_hash: messageHash,
+                text: textToVectorize,
+                is_user: isUser,
+                timestamp: Date.now(),
+                chat_id: ctx.chatId,
+                character_name: ctx.name2 || 'Unknown'
+            }
+        };
+        
+        // Upsert to Qdrant
+        await upsert_points([point]);
+        
+        // Mark as vectorized
+        set_data(message, 'vectorized', true);
+        set_data(message, 'vector_hash', messageHash);
+        
+        debug_qdrant(`Vectorized message ${index} (hash: ${messageHash})`);
+        
+    } catch (e) {
+        error(`Failed to vectorize message ${index}:`, e);
+    }
+}
+
+// Vectorize messages that were previously skipped due to delay
+async function vectorize_delayed_messages() {
+    if (!get_settings('qdrant_enabled')) return;
+    if (!get_settings('auto_save_memories')) return;
     
-    const chunk = memoryBuffer.add({
-        index: index,
-        text: textToBuffer,
-        isUser: isUser,
-        timestamp: Date.now()
+    const ctx = getContext();
+    const chat = ctx.chat;
+    
+    if (!chat || chat.length === 0) return;
+    
+    const delay = get_settings('vectorization_delay');
+    const threshold = chat.length - delay;
+    
+    debug_qdrant(`Checking for delayed messages to vectorize (threshold: ${threshold})`);
+    
+    let vectorized = 0;
+    
+    for (let i = 0; i < threshold; i++) {
+        const message = chat[i];
+        
+        // Skip system messages
+        if (message.is_system) continue;
+        
+        // Skip already vectorized
+        if (get_data(message, 'vectorized')) continue;
+        
+        // Check message type settings
+        if (message.is_user && !get_settings('save_user_messages')) continue;
+        if (!message.is_user && !get_settings('save_char_messages')) continue;
+        
+        // Vectorize this message
+        await vectorize_message(i, message.mes, message.is_user);
+        vectorized++;
+    }
+    
+    if (vectorized > 0) {
+        debug_qdrant(`Vectorized ${vectorized} delayed messages`);
+    }
+}
+
+// ==================== DUPLICATE DETECTION ====================
+
+// Detect and remove duplicate entries in search results
+function detect_duplicates(results) {
+    const seenHashes = new Map();  // hash -> { result, timestamp }
+    const uniqueResults = [];
+    const duplicateIds = [];
+    
+    for (const result of results) {
+        const hash = result.payload.message_hash;
+        const timestamp = result.payload.timestamp;
+        
+        // Skip results without hash (old format)
+        if (!hash) {
+            uniqueResults.push(result);
+            continue;
+        }
+        
+        if (seenHashes.has(hash)) {
+            const existing = seenHashes.get(hash);
+            
+            if (timestamp > existing.timestamp) {
+                // Current is newer = duplicate, delete it
+                duplicateIds.push(result.id);
+                debug_qdrant(`Duplicate found: ${result.id} is newer copy of ${existing.result.id}`);
+            } else {
+                // Current is older = keep it, delete existing
+                duplicateIds.push(existing.result.id);
+                const idx = uniqueResults.indexOf(existing.result);
+                if (idx >= 0) {
+                    uniqueResults[idx] = result;
+                }
+                seenHashes.set(hash, { result, timestamp });
+                debug_qdrant(`Duplicate found: ${existing.result.id} is newer copy of ${result.id}`);
+            }
+        } else {
+            seenHashes.set(hash, { result, timestamp });
+            uniqueResults.push(result);
+        }
+    }
+    
+    return { uniqueResults, duplicateIds };
+}
+
+// Delete points by their IDs
+async function delete_points_by_ids(pointIds) {
+    if (!pointIds || pointIds.length === 0) return;
+    
+    const url = get_settings('qdrant_url');
+    const collection = get_current_collection_name();
+    
+    if (!url || !collection) {
+        throw new Error('Qdrant not configured');
+    }
+    
+    const response = await fetch(`${url}/collections/${collection}/points/delete`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+            points: pointIds
+        })
     });
     
-    if (chunk) {
-        // Process the chunk asynchronously
-        process_and_store_chunk(chunk).catch(e => {
-            error('Failed to process chunk:', e);
-        });
+    if (!response.ok) {
+        throw new Error(`Delete failed: ${await response.text()}`);
+    }
+    
+    debug_qdrant(`Deleted ${pointIds.length} duplicate points`);
+}
+
+// ==================== MESSAGE DELETION SYNC ====================
+
+// Delete Qdrant point by message hash
+async function delete_qdrant_point_by_hash(messageHash) {
+    const url = get_settings('qdrant_url');
+    const collection = get_current_collection_name();
+    const ctx = getContext();
+    
+    if (!url || !collection) {
+        throw new Error('Qdrant not configured');
+    }
+    
+    const response = await fetch(`${url}/collections/${collection}/points/delete`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+            filter: {
+                must: [
+                    { key: "message_hash", match: { value: messageHash } },
+                    { key: "chat_id", match: { value: ctx.chatId } }
+                ]
+            }
+        })
+    });
+    
+    if (response.ok) {
+        debug_qdrant(`Deleted Qdrant point for hash ${messageHash}`);
+        return true;
+    } else {
+        error(`Failed to delete Qdrant point: ${await response.text()}`);
+        return false;
+    }
+}
+
+// Handle Qdrant deletion when messages are deleted in SillyTavern
+async function handle_qdrant_message_deleted() {
+    if (!get_settings('qdrant_enabled')) return;
+    if (!get_settings('delete_on_message_delete')) return;
+    
+    const ctx = getContext();
+    const chat = ctx.chat;
+    const currentLength = chat ? chat.length : 0;
+    const previousLength = LAST_CHAT_LENGTH;
+    
+    if (currentLength >= previousLength) return;  // No deletion
+    
+    debug_qdrant(`Message deletion detected: ${previousLength} -> ${currentLength}`);
+    
+    // Find deleted message hashes by comparing snapshots
+    const deletedHashes = [];
+    
+    for (const [idx, oldHash] of LAST_CHAT_HASHES) {
+        const currentMessage = chat[idx];
+        const newHash = currentMessage ? compute_message_hash(currentMessage) : null;
+        
+        if (oldHash !== newHash) {
+            // This message was deleted or changed
+            // Look for vector_hash in our records
+            // Since message is deleted, we need to use the stored hash from LAST_CHAT_HASHES
+            deletedHashes.push(oldHash);
+        }
+    }
+    
+    if (deletedHashes.length === 0) {
+        debug_qdrant('No hashes found for deleted messages');
+        return;
+    }
+    
+    debug_qdrant(`Found ${deletedHashes.length} hashes to delete from Qdrant`);
+    
+    // Delete each hash from Qdrant
+    for (const hash of deletedHashes) {
+        try {
+            await delete_qdrant_point_by_hash(hash);
+        } catch (e) {
+            error(`Failed to delete Qdrant point for hash ${hash}:`, e);
+        }
     }
 }
 
@@ -3257,6 +4148,13 @@ async function retrieve_relevant_memories() {
     const chat = ctx.chat;
     
     if (!chat || chat.length === 0) {
+        return [];
+    }
+    
+    // Check minimum message count before retrieving
+    const minMessages = get_settings('qdrant_min_messages');
+    if (chat.length < minMessages) {
+        debug_qdrant(`Qdrant retrieval deferred: ${chat.length} messages < minimum ${minMessages}`);
         return [];
     }
     

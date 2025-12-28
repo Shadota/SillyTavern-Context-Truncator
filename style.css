@@ -510,27 +510,27 @@
 }
 
 .ct_breakdown_chat {
-    background: #4caf50; /* Green */
+    background: #4caf50; /* Green - user approved */
 }
 
 .ct_breakdown_system {
-    background: #f44336; /* Red */
+    background: #d9a3a3; /* Pastel Red/Rose - muted, mellow */
 }
 
 .ct_breakdown_worldrules {
-    background: #ffcc00; /* Yellow */
+    background: #e6d48a; /* Pastel Yellow/Gold - muted */
 }
 
 .ct_breakdown_summaries {
-    background: #00bcd4; /* Cyan/Teal */
+    background: #8ec8d4; /* Pastel Cyan/Teal - muted, mellow */
 }
 
 .ct_breakdown_qdrant {
-    background: #ce93d8; /* Purple - unchanged */
+    background: #ce93d8; /* Purple - user approved */
 }
 
 .ct_breakdown_free {
-    background: #5a5a5a; /* Gray - unchanged */
+    background: #5a5a5a; /* Gray - user approved */
 }
 
 .ct_breakdown_legend {

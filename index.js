@@ -5197,20 +5197,20 @@ function detect_duplicates(results) {
     const seenHashes = new Map();  // hash -> { result, timestamp }
     const uniqueResults = [];
     const duplicateIds = [];
-    
+
     for (const result of results) {
         const hash = result.payload.message_hash;
         const timestamp = result.payload.timestamp;
-        
+
         // Skip results without hash (old format)
         if (!hash) {
             uniqueResults.push(result);
             continue;
         }
-        
+
         if (seenHashes.has(hash)) {
             const existing = seenHashes.get(hash);
-            
+
             if (timestamp > existing.timestamp) {
                 // Current is newer = duplicate, delete it
                 duplicateIds.push(result.id);
@@ -5230,8 +5230,26 @@ function detect_duplicates(results) {
             uniqueResults.push(result);
         }
     }
-    
+
     return { uniqueResults, duplicateIds };
+}
+
+// Simple deduplication function that removes duplicates and returns unique results
+function deduplicate_results_simple(results) {
+    if (!results || results.length === 0) {
+        return results;
+    }
+
+    const { uniqueResults, duplicateIds } = detect_duplicates(results);
+
+    // Async cleanup of duplicates (fire-and-forget)
+    if (duplicateIds.length > 0) {
+        delete_points_by_ids(duplicateIds).catch(e => {
+            debug_qdrant('Failed to delete duplicate points:', e);
+        });
+    }
+
+    return uniqueResults;
 }
 
 // Delete points by their IDs

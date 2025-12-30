@@ -2863,7 +2863,10 @@ class SummaryQueue {
                 if (e.name === 'AbortError' || this.stopped) {
                     debug(`Summarization aborted for message ${index}`);
                 } else {
-                    error(`Failed to summarize message ${index}:`, e);
+                    // Log to console only - no toastr popup
+                    // This avoids false-positive error popups when summarization actually succeeds
+                    // (some models return empty but the summary is still saved)
+                    console.error(`[${MODULE_NAME_FANCY}]`, `Failed to summarize message ${index}:`, e);
                     set_data(message, 'error', String(e));
                 }
                 this.abortController = null;

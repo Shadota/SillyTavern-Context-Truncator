@@ -4445,11 +4445,19 @@ async function search_memories(queryText, limit = null, scoreThreshold = null) {
 
         let results;
 
-        // Use simplified temporal search if enabled
+        // Temporal search logic
         if (get_settings('enable_temporal_boost')) {
-            results = await search_with_simple_temporal(
-                collection, queryEmbedding, requestLimit, scoreThreshold, timestampThreshold
-            );
+            if (get_settings('use_simple_temporal_filter')) {
+                // Use simplified temporal filtering (filter out recent messages)
+                results = await search_standard_with_filter(
+                    collection, queryEmbedding, requestLimit, scoreThreshold, timestampThreshold
+                );
+            } else {
+                // Use complex temporal scoring (server-side formula)
+                results = await search_with_temporal_scoring(
+                    collection, queryEmbedding, requestLimit, scoreThreshold
+                );
+            }
         } else {
             // Standard search with timestamp filtering
             results = await search_standard_with_filter(

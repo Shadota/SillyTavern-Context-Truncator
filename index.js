@@ -229,9 +229,11 @@ function check_connection_profiles_active() {
     return getContext().extensionSettings?.connectionManager !== undefined;
 }
 
-function get_current_connection_profile() {
+async function get_current_connection_profile() {
     if (!check_connection_profiles_active()) return;
-    return getContext().extensionSettings.connectionManager.selectedProfile;
+    const ctx = getContext();
+    const result = await ctx.executeSlashCommandsWithOptions(`/profile`);
+    return result.pipe;
 }
 
 function get_connection_profiles() {
@@ -251,14 +253,26 @@ function verify_connection_profile(id) {
 }
 
 function get_summary_connection_profile() {
-    let id = get_settings('connection_profile');
+    const id = get_settings('connection_profile');
     
-    // If none selected, invalid, or connection profiles not active, use the current profile
-    if (id === "" || !verify_connection_profile(id) || !check_connection_profiles_active()) {
-        id = get_current_connection_profile();
+    // Return the selected profile ID if valid, otherwise empty string (use current)
+    if (id !== "" && verify_connection_profile(id) && check_connection_profiles_active()) {
+        return id;
     }
     
-    return id;
+    return "";  // Empty = use current profile (no switch needed)
+}
+
+async function set_connection_profile(name) {
+    if (!check_connection_profiles_active()) return;
+    if (!name) return;  // Empty name means use current, no switch needed
+    
+    const currentProfile = await get_current_connection_profile();
+    if (name === currentProfile) return;  // Already using this profile
+    
+    debug(`Switching connection profile to: ${name}`);
+    const ctx = getContext();
+    await ctx.executeSlashCommandsWithOptions(`/profile ${name}`);
 }
 
 async function update_connection_profile_dropdown() {
@@ -2711,96 +2725,124 @@ class SummaryQueue {
         
         debug(`Summarizing message ${index}...`);
         
-        // Create summary prompt with placeholders
-        const prompt_template = get_settings('summary_prompt');
-        const max_words = get_settings('summary_max_words') || 50;
+        // === CONNECTION PROFILE SWITCHING ===
+        // Save current profile and switch to summary profile if configured
+        let originalProfile = null;
+        const summaryProfile = get_summary_connection_profile();
         
-        // Determine the likely speaker for the prefill
-        const speakerLabel = message.is_user
-            ? (ctx.name1 || 'User') + ':'
-            : (ctx.name2 || 'Character') + ':';
-        
-        let prompt = prompt_template
-            .replace(/\{\{message\}\}/g, message.mes)
-            .replace(/\{\{words\}\}/g, max_words)
-            .replace(/\{\{user\}\}/g, ctx.name1 || 'User')
-            .replace(/\{\{char\}\}/g, ctx.name2 || 'Character');
-        
-        // Generate summary using generateRaw with prefill
-        try {
-            // Create new AbortController for this generation
-            this.abortController = new AbortController();
-            
-            // generateRaw is imported from script.js at module level
-            debug(`Generating summary with prefill: "${speakerLabel}"`);
-            
-            // Use generateRaw with prefill to force response format
-            // The prefill starts the response with the speaker label, preventing <think> blocks
-            const result = await generateRaw({
-                prompt: prompt,
-                prefill: speakerLabel + ' ',  // Start response with speaker label
-                // Note: generateRaw doesn't support abortSignal directly,
-                // but we check this.stopped before and after the call
-            });
-            
-            // Check if stopped during generation
-            if (this.stopped) {
-                debug(`Summarization stopped during generation of message ${index}`);
-                this.abortController = null;
-                return;
-            }
-            
-            this.abortController = null;
-            
-            if (result) {
-                // The result should already start with the speaker label from prefill
-                // Prepend the prefill since it's not included in the response
-                let rawSummary = speakerLabel + ' ' + result;
-                
-                // Clean the output - remove any thinking content that might have snuck through
-                let summary = this.clean_summary_output(rawSummary);
-                
-                // If cleaning removed the speaker label, add it back
-                if (!summary.includes(':')) {
-                    summary = speakerLabel + ' ' + summary;
-                }
-                
-                // Trim incomplete sentences if enabled
-                if (ctx.powerUserSettings?.trim_sentences) {
-                    summary = trimToEndSentence(summary);
-                }
-                
-                // Validate the summary looks reasonable
-                if (summary.length < 10) {
-                    debug(`Warning: Summary too short (${summary.length}), may need review`);
-                } else if (summary.length > 300) {
-                    // Truncate overly long summaries (shouldn't happen with prefill but safety measure)
-                    debug(`Warning: Summary too long (${summary.length}), truncating`);
-                    summary = summary.substring(0, 300);
-                    summary = trimToEndSentence(summary);
-                }
-                
-                // Store summary
-                set_data(message, 'memory', summary);
-                set_data(message, 'needs_summary', false);
-                set_data(message, 'hash', getStringHash(message.mes));
-                
-                debug(`Summarized message ${index}: "${summary}"`);
-            }
-        } catch (e) {
-            // Don't log error if it was an abort
-            if (e.name === 'AbortError' || this.stopped) {
-                debug(`Summarization aborted for message ${index}`);
+        if (summaryProfile) {
+            // A specific profile is configured for summarization
+            originalProfile = await get_current_connection_profile();
+            if (originalProfile !== summaryProfile) {
+                debug(`Switching from profile "${originalProfile}" to "${summaryProfile}" for summarization`);
+                await set_connection_profile(summaryProfile);
             } else {
-                error(`Failed to summarize message ${index}:`, e);
-                set_data(message, 'error', String(e));
+                // Already using the correct profile, no need to restore later
+                originalProfile = null;
             }
-            this.abortController = null;
         }
+        // === END CONNECTION PROFILE SWITCHING ===
         
-        // Refresh memory after summarization (unless stopped)
-        if (!this.stopped) {
-            refresh_memory();
+        try {
+            // Create summary prompt with placeholders
+            const prompt_template = get_settings('summary_prompt');
+            const max_words = get_settings('summary_max_words') || 50;
+            
+            // Determine the likely speaker for the prefill
+            const speakerLabel = message.is_user
+                ? (ctx.name1 || 'User') + ':'
+                : (ctx.name2 || 'Character') + ':';
+            
+            let prompt = prompt_template
+                .replace(/\{\{message\}\}/g, message.mes)
+                .replace(/\{\{words\}\}/g, max_words)
+                .replace(/\{\{user\}\}/g, ctx.name1 || 'User')
+                .replace(/\{\{char\}\}/g, ctx.name2 || 'Character');
+            
+            // Generate summary using generateRaw with prefill
+            try {
+                // Create new AbortController for this generation
+                this.abortController = new AbortController();
+                
+                // generateRaw is imported from script.js at module level
+                debug(`Generating summary with prefill: "${speakerLabel}"`);
+                
+                // Use generateRaw with prefill to force response format
+                // The prefill starts the response with the speaker label, preventing <think> blocks
+                const result = await generateRaw({
+                    prompt: prompt,
+                    prefill: speakerLabel + ' ',  // Start response with speaker label
+                    // Note: generateRaw doesn't support abortSignal directly,
+                    // but we check this.stopped before and after the call
+                });
+                
+                // Check if stopped during generation
+                if (this.stopped) {
+                    debug(`Summarization stopped during generation of message ${index}`);
+                    this.abortController = null;
+                    return;
+                }
+                
+                this.abortController = null;
+                
+                if (result) {
+                    // The result should already start with the speaker label from prefill
+                    // Prepend the prefill since it's not included in the response
+                    let rawSummary = speakerLabel + ' ' + result;
+                    
+                    // Clean the output - remove any thinking content that might have snuck through
+                    let summary = this.clean_summary_output(rawSummary);
+                    
+                    // If cleaning removed the speaker label, add it back
+                    if (!summary.includes(':')) {
+                        summary = speakerLabel + ' ' + summary;
+                    }
+                    
+                    // Trim incomplete sentences if enabled
+                    if (ctx.powerUserSettings?.trim_sentences) {
+                        summary = trimToEndSentence(summary);
+                    }
+                    
+                    // Validate the summary looks reasonable
+                    if (summary.length < 10) {
+                        debug(`Warning: Summary too short (${summary.length}), may need review`);
+                    } else if (summary.length > 300) {
+                        // Truncate overly long summaries (shouldn't happen with prefill but safety measure)
+                        debug(`Warning: Summary too long (${summary.length}), truncating`);
+                        summary = summary.substring(0, 300);
+                        summary = trimToEndSentence(summary);
+                    }
+                    
+                    // Store summary
+                    set_data(message, 'memory', summary);
+                    set_data(message, 'needs_summary', false);
+                    set_data(message, 'hash', getStringHash(message.mes));
+                    
+                    debug(`Summarized message ${index}: "${summary}"`);
+                }
+            } catch (e) {
+                // Don't log error if it was an abort
+                if (e.name === 'AbortError' || this.stopped) {
+                    debug(`Summarization aborted for message ${index}`);
+                } else {
+                    error(`Failed to summarize message ${index}:`, e);
+                    set_data(message, 'error', String(e));
+                }
+                this.abortController = null;
+            }
+            
+            // Refresh memory after summarization (unless stopped)
+            if (!this.stopped) {
+                refresh_memory();
+            }
+        } finally {
+            // === RESTORE CONNECTION PROFILE ===
+            // Always restore the original profile, even if an error occurred
+            if (originalProfile) {
+                debug(`Restoring original profile "${originalProfile}"`);
+                await set_connection_profile(originalProfile);
+            }
+            // === END RESTORE CONNECTION PROFILE ===
         }
     }
 }

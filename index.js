@@ -172,6 +172,35 @@ const STABLE_THRESHOLD = 5;      // Consecutive stable gens to reach STABLE stat
 let QDRANT_TOKEN_HISTORY = [];  // Rolling history of Qdrant injection tokens
 const QDRANT_HISTORY_SIZE = 5;  // Number of samples to average
 
+// Vector Statistics State (V11)
+let VECTOR_STATS = {
+    // Connection health
+    connected: false,
+    lastConnectionError: null,
+
+    // Collection stats (cached, refresh on demand)
+    collectionName: null,
+    totalPoints: 0,
+    chunkPoints: 0,
+    singlePoints: 0,
+
+    // Last retrieval stats
+    retrievedCount: 0,
+    scores: [], // Array of scores for distribution chart
+    avgScore: 0,
+    minScore: 0,
+    maxScore: 0,
+    temporalMode: 'unknown', // 'server' or 'client'
+    duplicatesRemoved: 0,
+
+    // Buffer stats
+    bufferMessageCount: 0,
+
+    // Last update timestamps
+    lastCollectionCheck: 0,
+    lastRetrieval: 0
+};
+
 // Message change resilience (deletion/edit tracking)
 let DELETION_COUNT = 0;           // Number of impactful deletions since last calibration checkpoint
 let LAST_CHAT_LENGTH = 0;         // Track chat length to detect deletions
@@ -1846,7 +1875,10 @@ function update_overview_tab() {
     
     // Update Qdrant Memory Section in Overview
     update_overview_memories();
-    
+
+    // Update Vector Statistics (V11)
+    update_vector_stats_display();
+
     // Update Predictions and Summarization Stats
     update_prediction_display();
     update_summary_stats_display();
@@ -3336,13 +3368,26 @@ function initialize_ui_listeners() {
     $('#ct_ov_memory_toggle').on('click', function() {
         const $content = $('#ct_ov_memory_list');
         const isExpanded = $content.is(':visible');
-        
+
         if (isExpanded) {
             $content.slideUp(200);
             $(this).removeClass('expanded');
         } else {
             $content.slideDown(200);
             $(this).addClass('expanded');
+        }
+    });
+
+    // Vector Memory refresh button (V11)
+    $('#ct_ov_vector_refresh').on('click', async () => {
+        const $icon = $('#ct_ov_vector_refresh i');
+        $icon.addClass('fa-spin');
+
+        try {
+            await refresh_vector_statistics();
+            update_vector_stats_display();
+        } finally {
+            setTimeout(() => $icon.removeClass('fa-spin'), 500);
         }
     });
     
@@ -4359,9 +4404,11 @@ async function search_memories(queryText, limit = null, scoreThreshold = null) {
         debug_qdrant(`Search returned ${results.length} results (temporal: ${enableTemporalBoost})`);
         
         // Detect and remove duplicates if enabled
+        let duplicateCount = 0;
         if (autoDedupe && results.length > 0) {
             const { uniqueResults, duplicateIds } = detect_duplicates(results);
-            
+            duplicateCount = duplicateIds.length;
+
             // Async delete duplicates (fire-and-forget)
             if (duplicateIds.length > 0) {
                 delete_points_by_ids(duplicateIds).catch(e => {
@@ -4369,15 +4416,21 @@ async function search_memories(queryText, limit = null, scoreThreshold = null) {
                 });
                 debug_qdrant(`Removing ${duplicateIds.length} duplicates, keeping ${uniqueResults.length} unique`);
             }
-            
+
             results = uniqueResults;
         }
-        
+
         // Limit to requested count after deduplication
         results = results.slice(0, limit);
-        
+
         // Map results to common format (handle all formats: per-message, chunk, v10 chunk)
-        return results.map(r => map_search_result_to_memory(r));
+        const memories = results.map(r => map_search_result_to_memory(r));
+
+        // Track retrieval statistics (V11)
+        const temporalMode = enableTemporalBoost ? (results.length > 0 && results[0].originalScore !== undefined ? 'server' : 'client') : 'none';
+        track_retrieval_stats(memories, duplicateCount, temporalMode);
+
+        return memories;
         
     } catch (e) {
         error('Failed to search memories:', e);
@@ -4785,6 +4838,200 @@ async function vectorize_delayed_messages() {
     
     if (processed > 0) {
         debug_qdrant(`Processed ${processed} delayed messages (chunking: ${useChunking})`);
+    }
+}
+
+// ==================== VECTOR STATISTICS FUNCTIONS (V11) ====================
+
+// Create a simple text-based score distribution chart
+function create_score_distribution_chart(scores) {
+    if (!scores || scores.length === 0) return '--';
+
+    // Categorize scores: high (>=0.8), medium (0.5-0.8), low (<0.5)
+    const categories = { high: 0, medium: 0, low: 0 };
+    for (const score of scores) {
+        if (score >= 0.8) categories.high++;
+        else if (score >= 0.5) categories.medium++;
+        else categories.low++;
+    }
+
+    // Create a simple bar chart (max 10 characters)
+    const total = scores.length;
+    const highBars = Math.round((categories.high / total) * 10);
+    const mediumBars = Math.round((categories.medium / total) * 10);
+    const lowBars = Math.round((categories.low / total) * 10);
+
+    const chart = '█'.repeat(highBars) + '░'.repeat(mediumBars) + '▒'.repeat(lowBars);
+
+    return `${chart} (${categories.high}/${categories.medium}/${categories.low})`;
+}
+
+// Get detailed collection statistics
+async function get_vector_statistics() {
+    const url = get_settings('qdrant_url');
+    const collection = get_current_collection_name();
+
+    if (!url || !collection) {
+        return null;
+    }
+
+    try {
+        // Get collection info
+        const infoResponse = await fetch(`${url}/collections/${collection}`, {
+            method: 'GET'
+        });
+
+        if (!infoResponse.ok) {
+            return null;
+        }
+
+        const info = await infoResponse.json();
+        const totalPoints = info.result?.points_count || 0;
+
+        // Count chunks vs single messages (optional, may be slow for large collections)
+        let chunkCount = 0;
+        let singleCount = 0;
+
+        // Use scroll API to count by type (paginated)
+        // This is optional - can skip if collection is large
+        if (totalPoints < 10000) {
+            const scrollResponse = await fetch(`${url}/collections/${collection}/points/scroll`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    limit: totalPoints,
+                    with_payload: ['is_chunk']
+                })
+            });
+
+            if (scrollResponse.ok) {
+                const scrollData = await scrollResponse.json();
+                for (const point of scrollData.result?.points || []) {
+                    if (point.payload?.is_chunk) {
+                        chunkCount++;
+                    } else {
+                        singleCount++;
+                    }
+                }
+            }
+        }
+
+        return {
+            collectionName: collection,
+            totalPoints: totalPoints,
+            chunkPoints: chunkCount,
+            singlePoints: singleCount
+        };
+
+    } catch (e) {
+        error('Failed to get vector statistics:', e);
+        return null;
+    }
+}
+
+// Track retrieval statistics after memory search
+function track_retrieval_stats(memories, duplicateCount, temporalMode) {
+    VECTOR_STATS.retrievedCount = memories.length;
+    VECTOR_STATS.duplicatesRemoved = duplicateCount;
+    VECTOR_STATS.temporalMode = temporalMode;
+    VECTOR_STATS.lastRetrieval = Date.now();
+
+    if (memories.length > 0) {
+        const scores = memories.map(m => m.score);
+        VECTOR_STATS.scores = scores; // Store for distribution chart
+        VECTOR_STATS.avgScore = scores.reduce((a, b) => a + b, 0) / scores.length;
+        VECTOR_STATS.minScore = Math.min(...scores);
+        VECTOR_STATS.maxScore = Math.max(...scores);
+    } else {
+        VECTOR_STATS.scores = [];
+        VECTOR_STATS.avgScore = 0;
+        VECTOR_STATS.minScore = 0;
+        VECTOR_STATS.maxScore = 0;
+    }
+}
+
+// Update vector statistics display
+async function update_vector_stats_display() {
+    // Show/hide card based on Qdrant enabled setting
+    const isQdrantEnabled = get_settings('qdrant_enabled');
+    $('#ct_vector_memory_card').toggle(isQdrantEnabled);
+
+    if (!isQdrantEnabled) {
+        return; // Don't update stats if disabled
+    }
+
+    // Update health indicator
+    const $health = $('#ct_ov_vector_health');
+    if (VECTOR_STATS.connected) {
+        $health.text('✓ Connected').removeClass('ct_health_unknown ct_health_error').addClass('ct_health_good');
+    } else {
+        $health.text('✗ Error').removeClass('ct_health_unknown ct_health_good').addClass('ct_health_error');
+    }
+
+    // Update stored count
+    if (VECTOR_STATS.totalPoints > 0) {
+        const label = VECTOR_STATS.chunkPoints > 0 ? 'chunks' : 'points';
+        $('#ct_ov_vector_stored').text(`${VECTOR_STATS.totalPoints} ${label}`);
+    } else {
+        $('#ct_ov_vector_stored').text('-- chunks');
+    }
+
+    // Update retrieved stats
+    if (VECTOR_STATS.retrievedCount > 0) {
+        const avgScore = VECTOR_STATS.avgScore.toFixed(2);
+        const distribution = create_score_distribution_chart(VECTOR_STATS.scores || []);
+        $('#ct_ov_vector_retrieved').text(`${VECTOR_STATS.retrievedCount} (avg ${avgScore})`);
+        $('#ct_ov_vector_distribution').text(distribution);
+    } else {
+        $('#ct_ov_vector_retrieved').text('--');
+        $('#ct_ov_vector_distribution').text('--');
+    }
+
+    // Update buffer state
+    const bufferCount = chunkBuffer.getState().messageCount;
+    $('#ct_ov_vector_buffer').text(`${bufferCount} msgs`);
+
+    // Update advanced stats
+    $('#ct_ov_collection_name').text(VECTOR_STATS.collectionName || '--');
+    $('#ct_ov_total_points').text(VECTOR_STATS.totalPoints || '--');
+    $('#ct_ov_chunk_points').text(VECTOR_STATS.chunkPoints || '--');
+    $('#ct_ov_single_points').text(VECTOR_STATS.singlePoints || '--');
+    $('#ct_ov_temporal_mode').text(VECTOR_STATS.temporalMode === 'server' ? 'Server-side' :
+                                   VECTOR_STATS.temporalMode === 'client' ? 'Client-side' : '--');
+    $('#ct_ov_avg_score').text(VECTOR_STATS.avgScore > 0 ? VECTOR_STATS.avgScore.toFixed(3) : '--');
+    $('#ct_ov_score_range').text(VECTOR_STATS.minScore > 0 ?
+                                  `${VECTOR_STATS.minScore.toFixed(2)} - ${VECTOR_STATS.maxScore.toFixed(2)}` : '--');
+    $('#ct_ov_deduped').text(VECTOR_STATS.duplicatesRemoved > 0 ? VECTOR_STATS.duplicatesRemoved : '0');
+}
+
+// Refresh vector statistics (called manually via button)
+async function refresh_vector_statistics() {
+    try {
+        // Test connection
+        const url = get_settings('qdrant_url');
+        if (url) {
+            const response = await fetch(`${url}/collections`, { method: 'GET' });
+            VECTOR_STATS.connected = response.ok;
+        } else {
+            VECTOR_STATS.connected = false;
+        }
+
+        // Get collection stats
+        if (VECTOR_STATS.connected) {
+            const stats = await get_vector_statistics();
+            if (stats) {
+                VECTOR_STATS.collectionName = stats.collectionName;
+                VECTOR_STATS.totalPoints = stats.totalPoints;
+                VECTOR_STATS.chunkPoints = stats.chunkPoints;
+                VECTOR_STATS.singlePoints = stats.singlePoints;
+                VECTOR_STATS.lastCollectionCheck = Date.now();
+            }
+        }
+
+    } catch (e) {
+        VECTOR_STATS.connected = false;
+        VECTOR_STATS.lastConnectionError = String(e);
+        debug_qdrant('Vector statistics refresh failed:', e);
     }
 }
 

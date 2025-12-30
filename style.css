@@ -1527,3 +1527,61 @@
 .ct_stat_row_progress {
     align-items: flex-start;
 }
+
+/* ==================== VECTOR STATISTICS STYLES (V11) ==================== */
+
+/* Health indicators */
+.ct_health_indicator {
+    font-size: 0.85em;
+    padding: 2px 6px;
+    border-radius: 4px;
+    font-weight: 500;
+}
+
+.ct_health_good {
+    color: #90ee90;
+    background-color: rgba(144, 238, 144, 0.15);
+}
+
+.ct_health_error {
+    color: #ffaaaa;
+    background-color: rgba(255, 170, 170, 0.15);
+}
+
+.ct_health_unknown {
+    color: #aaa;
+    background-color: rgba(170, 170, 170, 0.1);
+}
+
+/* Mini refresh button */
+.ct_mini_button {
+    background: transparent;
+    border: none;
+    color: var(--SmartThemeBodyColor);
+    cursor: pointer;
+    padding: 2px 4px;
+    margin-right: 6px;
+    opacity: 0.6;
+    transition: opacity 0.2s;
+}
+
+.ct_mini_button:hover {
+    opacity: 1;
+}
+
+/* Advanced section header */
+.ct_advanced_section_header {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    margin: 12px 0 8px 0;
+    padding-top: 8px;
+    border-top: 1px solid var(--SmartThemeBorderColor);
+    font-weight: 500;
+    font-size: 0.9em;
+    color: var(--SmartThemeBodyColor);
+}
+
+.ct_advanced_section_header i {
+    opacity: 0.7;
+}

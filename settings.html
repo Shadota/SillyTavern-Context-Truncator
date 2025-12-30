@@ -107,7 +107,7 @@
 
                 <!-- Simplified Stats Cards Grid -->
                 <div class="ct_stats_grid ct_stats_grid_compact">
-                    
+
                     <!-- Status Card (Phase + Next Trim only) -->
                     <div class="ct_stats_card">
                         <div class="ct_card_header">
@@ -139,7 +139,7 @@
                             </div>
                         </div>
                     </div>
-    
+
                     <!-- Summaries Card (Version 2E: clean rows with percentage in header) -->
                     <div class="ct_stats_card">
                         <div class="ct_card_header">
@@ -181,6 +181,64 @@
                                     </span>
                                 </span>
                                 <span id="ct_ov_pending_count" class="ct_stat_value">--</span>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Vector Memory Card - Only shown when Qdrant is enabled -->
+                    <div id="ct_vector_memory_card" class="ct_stats_card" style="display: none;">
+                        <div class="ct_card_header">
+                            <div class="ct_card_header_left">
+                                <i class="fa-solid fa-database"></i>
+                                <span>Vector Memory</span>
+                            </div>
+                            <div class="ct_card_header_right">
+                                <button id="ct_ov_vector_refresh" class="ct_mini_button" title="Refresh vector stats">
+                                    <i class="fa-solid fa-arrows-rotate"></i>
+                                </button>
+                                <span id="ct_ov_vector_health" class="ct_health_indicator ct_health_unknown">--</span>
+                            </div>
+                        </div>
+                        <div class="ct_card_content">
+                            <div class="ct_stat_row">
+                                <span class="ct_stat_label">
+                                    Stored
+                                    <span class="ct_tooltip">
+                                        <i class="fa-solid fa-circle-info ct_info_icon"></i>
+                                        <span class="ct_tooltip_text">Total chunks/vectors stored in this collection</span>
+                                    </span>
+                                </span>
+                                <span id="ct_ov_vector_stored" class="ct_stat_value">-- chunks</span>
+                            </div>
+                            <div class="ct_stat_row">
+                                <span class="ct_stat_label">
+                                    Retrieved
+                                    <span class="ct_tooltip">
+                                        <i class="fa-solid fa-circle-info ct_info_icon"></i>
+                                        <span class="ct_tooltip_text">Memories retrieved in last generation with average relevance score</span>
+                                    </span>
+                                </span>
+                                <span id="ct_ov_vector_retrieved" class="ct_stat_value">--</span>
+                            </div>
+                            <div class="ct_stat_row">
+                                <span class="ct_stat_label">
+                                    Distribution
+                                    <span class="ct_tooltip">
+                                        <i class="fa-solid fa-circle-info ct_info_icon"></i>
+                                        <span class="ct_tooltip_text">Score distribution of retrieved memories (high/med/low)</span>
+                                    </span>
+                                </span>
+                                <span id="ct_ov_vector_distribution" class="ct_stat_value">--</span>
+                            </div>
+                            <div class="ct_stat_row">
+                                <span class="ct_stat_label">
+                                    Buffer
+                                    <span class="ct_tooltip">
+                                        <i class="fa-solid fa-circle-info ct_info_icon"></i>
+                                        <span class="ct_tooltip_text">Messages currently buffered, waiting to be chunked</span>
+                                    </span>
+                                </span>
+                                <span id="ct_ov_vector_buffer" class="ct_stat_value">-- msgs</span>
                             </div>
                         </div>
                     </div>

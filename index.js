@@ -133,11 +133,11 @@ Recent chat always takes precedence over these notes.
     delete_on_message_delete: true,   // Delete Qdrant entries when messages are deleted
     auto_dedupe: true,                // Automatically remove duplicate entries during search
     
-    // ==================== TEMPORAL SCORING SETTINGS (V10) ====================
+    // ==================== TEMPORAL SCORING SETTINGS (V13) ====================
     enable_temporal_boost: true,      // Boost recent memories in search results
     temporal_scale_days: 7,           // Time scale for decay (days until score is halved)
     temporal_midpoint: 0.3,           // Minimum score multiplier for old memories (0-1)
-    temporal_prefetch_multiplier: 3,  // Fetch N times more results for re-ranking
+    use_simple_temporal_filter: true, // Use simpler, more reliable temporal filtering like st-qdrant-memory
     
     // ==================== SYNERGY SETTINGS ====================
     use_summaries_for_qdrant: false,
@@ -210,6 +210,40 @@ const DELETION_TOLERANCE = 3;     // Max deletions before soft recalibration
 // Utility functions
 function log(...args) {
     console.log(`[${MODULE_NAME_FANCY}]`, ...args);
+}
+
+// V13: Timestamp normalization for consistent temporal filtering
+function normalizeTimestamp(date) {
+    // Already a valid millisecond timestamp
+    if (typeof date === 'number' && date > 1000000000000) {
+        return date;
+    }
+
+    // Timestamp in seconds - convert to milliseconds
+    if (typeof date === 'number' && date > 1000000000 && date < 1000000000000) {
+        return date * 1000;
+    }
+
+    // Date object
+    if (date instanceof Date) {
+        const timestamp = date.getTime();
+        if (!isNaN(timestamp)) {
+            return timestamp;
+        }
+    }
+
+    // String date - try to parse it
+    if (typeof date === 'string' && date.trim()) {
+        const parsed = new Date(date);
+        const timestamp = parsed.getTime();
+        if (!isNaN(timestamp)) {
+            return timestamp;
+        }
+    }
+
+    // Fallback to current time
+    debug_qdrant('Could not normalize timestamp, using current time. Input:', date);
+    return Date.now();
 }
 
 // Module-specific debug functions
@@ -3090,10 +3124,10 @@ function register_event_listeners() {
     // Auto-summarize and auto-buffer on new character messages
     eventSource.on(event_types.CHARACTER_MESSAGE_RENDERED, (id) => {
         if (streamingProcessor && !streamingProcessor.isFinished) return;
-        
+
         // Auto-summarize (don't await - runs in background)
         auto_summarize_chat();
-        
+
         // Auto-buffer for Qdrant (if enabled)
         const ctx = getContext();
         if (id !== undefined && ctx.chat[id]) {
@@ -3102,19 +3136,25 @@ function register_event_listeners() {
                 buffer_message(id, message.mes, false);  // false = character message
             }
         }
-        
+
         // Vectorize delayed messages that are now outside the delay window
         vectorize_delayed_messages();
-        
+
         // Delay status update to ensure itemizedPrompts is populated
-        setTimeout(() => update_status_display(), 100);
+        setTimeout(async () => {
+            // Refresh vector statistics after each message
+            if (get_settings('qdrant_enabled')) {
+                await refresh_vector_statistics();
+            }
+            update_status_display();
+        }, 100);
     });
 
     // Auto-summarize and auto-buffer on new user messages
     eventSource.on(event_types.USER_MESSAGE_RENDERED, (id) => {
         // Auto-summarize (don't await - runs in background)
         auto_summarize_chat();
-        
+
         // Auto-buffer for Qdrant (if enabled)
         const ctx = getContext();
         if (id !== undefined && ctx.chat[id]) {
@@ -3123,12 +3163,18 @@ function register_event_listeners() {
                 buffer_message(id, message.mes, true);  // true = user message
             }
         }
-        
+
         // Vectorize delayed messages that are now outside the delay window
         vectorize_delayed_messages();
-        
+
         // Delay status update to ensure itemizedPrompts is populated
-        setTimeout(() => update_status_display(), 100);
+        setTimeout(async () => {
+            // Refresh vector statistics after each message
+            if (get_settings('qdrant_enabled')) {
+                await refresh_vector_statistics();
+            }
+            update_status_display();
+        }, 100);
     });
 }
 
@@ -3378,18 +3424,7 @@ function initialize_ui_listeners() {
         }
     });
 
-    // Vector Memory refresh button (V11)
-    $('#ct_ov_vector_refresh').on('click', async () => {
-        const $icon = $('#ct_ov_vector_refresh i');
-        $icon.addClass('fa-spin');
 
-        try {
-            await refresh_vector_statistics();
-            update_vector_stats_display();
-        } finally {
-            setTimeout(() => $icon.removeClass('fa-spin'), 500);
-        }
-    });
     
     // ==================== TOKEN COUNTS TOGGLE ====================
     $('#ct_breakdown_toggle').on('click', function() {
@@ -4361,77 +4396,85 @@ async function upsert_points(points) {
     debug_qdrant(`Upserted ${points.length} points to ${collection}`);
 }
 
-// Search for similar memories with temporal scoring (V10 enhancement)
+// Simple, reliable search limit calculation (V13 - simplified like st-qdrant-memory)
+function calculateSearchLimit(limit) {
+    // Fixed 1.5x overfetch for temporal re-ranking - much more reasonable than 3x
+    // This gives us enough results for deduplication without excessive data
+    return Math.ceil(limit * 1.5);
+}
+
+// Simplified memory search with reliable temporal filtering (V13 - like st-qdrant-memory)
 async function search_memories(queryText, limit = null, scoreThreshold = null) {
     const url = get_settings('qdrant_url');
     const collection = get_current_collection_name();
-    
+
     if (!url || !collection) {
         throw new Error('Qdrant not configured');
     }
-    
+
     limit = limit ?? get_settings('memory_limit');
     scoreThreshold = scoreThreshold ?? get_settings('score_threshold');
-    
-    // Request extra results for deduplication and temporal re-ranking
-    const autoDedupe = get_settings('auto_dedupe');
-    const enableTemporalBoost = get_settings('enable_temporal_boost');
-    const prefetchMultiplier = enableTemporalBoost ? get_settings('temporal_prefetch_multiplier') : 1;
-    const requestLimit = Math.max(limit * prefetchMultiplier, autoDedupe ? limit * 2 : limit);
-    
+
+    // Simple overfetch for temporal re-ranking (1.5x instead of 3x)
+    const requestLimit = calculateSearchLimit(limit);
+
+    // Calculate timestamp threshold to exclude recent messages
+    const ctx = getContext();
+    const chat = ctx.chat || [];
+    const retainRecent = get_settings('retain_recent_messages');
+    let timestampThreshold = 0;
+
+    if (retainRecent > 0 && chat.length > retainRecent) {
+        const retainIndex = chat.length - retainRecent;
+        const retainMessage = chat[retainIndex];
+        if (retainMessage && retainMessage.send_date) {
+            timestampThreshold = normalizeTimestamp(retainMessage.send_date);
+            debug_qdrant(`Excluding messages newer than timestamp: ${timestampThreshold}`);
+        }
+    }
+
+    debug_qdrant(`Search - limit:${limit}, requestLimit:${requestLimit}, retainRecent:${retainRecent}`);
+
     try {
         // Generate embedding for query
         const queryEmbedding = await generate_embedding(queryText);
-        
+
         if (!queryEmbedding || queryEmbedding.length === 0) {
             throw new Error('Failed to generate query embedding');
         }
-        
+
         let results;
-        
-        // Use temporal scoring if enabled
-        if (enableTemporalBoost) {
-            results = await search_with_temporal_scoring(
-                collection, queryEmbedding, requestLimit, scoreThreshold
+
+        // Use simplified temporal search if enabled
+        if (get_settings('enable_temporal_boost')) {
+            results = await search_with_simple_temporal(
+                collection, queryEmbedding, requestLimit, scoreThreshold, timestampThreshold
             );
         } else {
-            // Standard search without temporal scoring
-            results = await search_standard(
-                collection, queryEmbedding, requestLimit, scoreThreshold
+            // Standard search with timestamp filtering
+            results = await search_standard_with_filter(
+                collection, queryEmbedding, requestLimit, scoreThreshold, timestampThreshold
             );
         }
-        
-        debug_qdrant(`Search returned ${results.length} results (temporal: ${enableTemporalBoost})`);
-        
-        // Detect and remove duplicates if enabled
-        let duplicateCount = 0;
-        if (autoDedupe && results.length > 0) {
-            const { uniqueResults, duplicateIds } = detect_duplicates(results);
-            duplicateCount = duplicateIds.length;
 
-            // Async delete duplicates (fire-and-forget)
-            if (duplicateIds.length > 0) {
-                delete_points_by_ids(duplicateIds).catch(e => {
-                    error('Failed to delete duplicate points:', e);
-                });
-                debug_qdrant(`Removing ${duplicateIds.length} duplicates, keeping ${uniqueResults.length} unique`);
-            }
+        debug_qdrant(`Search returned ${results.length} results`);
 
-            results = uniqueResults;
+        // Remove duplicates if enabled (simplified deduplication)
+        if (get_settings('auto_dedupe') && results.length > 0) {
+            results = deduplicate_results_simple(results);
         }
 
-        // Limit to requested count after deduplication
+        // Limit to requested count
         results = results.slice(0, limit);
 
-        // Map results to common format (handle all formats: per-message, chunk, v10 chunk)
+        // Map results to memory format
         const memories = results.map(r => map_search_result_to_memory(r));
 
-        // Track retrieval statistics (V11)
-        const temporalMode = enableTemporalBoost ? (results.length > 0 && results[0].originalScore !== undefined ? 'server' : 'client') : 'none';
-        track_retrieval_stats(memories, duplicateCount, temporalMode);
+        // Track retrieval statistics
+        track_retrieval_stats(memories, 0, get_settings('enable_temporal_boost') ? 'client' : 'none');
 
         return memories;
-        
+
     } catch (e) {
         error('Failed to search memories:', e);
         throw e;
@@ -4978,13 +5021,12 @@ async function update_vector_stats_display() {
 
     // Update retrieved stats
     if (VECTOR_STATS.retrievedCount > 0) {
-        const avgScore = VECTOR_STATS.avgScore.toFixed(2);
-        const distribution = create_score_distribution_chart(VECTOR_STATS.scores || []);
-        $('#ct_ov_vector_retrieved').text(`${VECTOR_STATS.retrievedCount} (avg ${avgScore})`);
-        $('#ct_ov_vector_distribution').text(distribution);
+        const avgScorePercent = (VECTOR_STATS.avgScore * 100).toFixed(1);
+        $('#ct_ov_vector_retrieved').text(`${VECTOR_STATS.retrievedCount} memories`);
+        $('#ct_ov_vector_avg_score').text(avgScorePercent);
     } else {
         $('#ct_ov_vector_retrieved').text('--');
-        $('#ct_ov_vector_distribution').text('--');
+        $('#ct_ov_vector_avg_score').text('--');
     }
 
     // Update buffer state

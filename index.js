@@ -70,7 +70,7 @@ EXAMPLES:
 • "{{user}}: Proposed exploring the abandoned fortress despite the warnings."
 • "Narrator: Described the rain-soaked streets of the Scab district."
 
-MESSAGE TO SUMMARIZE:
+{{context_block}}MESSAGE TO SUMMARIZE:
 {{message}}
 
 SUMMARY:`,
@@ -2767,6 +2767,48 @@ class SummaryQueue {
         return cleaned;
     }
     
+    // Build context block from previous message's summary for better summarization accuracy
+    // This helps the model understand references and pronouns in the current message
+    build_context_block(currentIndex, ctx) {
+        // No context for first message
+        if (currentIndex <= 0) {
+            return '';
+        }
+        
+        const chat = ctx.chat;
+        
+        // Look for the previous non-system message
+        let prevIndex = currentIndex - 1;
+        while (prevIndex >= 0 && chat[prevIndex]?.is_system) {
+            prevIndex--;
+        }
+        
+        if (prevIndex < 0) {
+            return '';  // No previous non-system message found
+        }
+        
+        const prevMessage = chat[prevIndex];
+        const prevSummary = get_memory(prevMessage);
+        
+        if (!prevSummary) {
+            debug(`No previous summary available for context (message ${prevIndex})`);
+            return '';  // No summary available for previous message
+        }
+        
+        // Build the context block with clear labeling
+        const contextBlock = `[PREVIOUS CONTEXT - For reference only, DO NOT summarize this section]
+The following summary is from the preceding message to help you understand references and pronouns.
+
+Previous Summary: ${prevSummary}
+
+[/PREVIOUS CONTEXT]
+
+`;
+        
+        debug(`Added context from message ${prevIndex}: "${prevSummary.substring(0, 50)}..."`);
+        return contextBlock;
+    }
+    
     async summarize_message(index) {
         const ctx = getContext();
         const message = ctx.chat[index];
@@ -2820,11 +2862,16 @@ class SummaryQueue {
                 ? (ctx.name1 || 'User') + ':'
                 : (ctx.name2 || 'Character') + ':';
             
+            // === CONTEXT INJECTION ===
+            // Get previous message's summary for context (helps with references/pronouns)
+            const contextBlock = this.build_context_block(index, ctx);
+            
             let prompt = prompt_template
                 .replace(/\{\{message\}\}/g, message.mes)
                 .replace(/\{\{words\}\}/g, max_words)
                 .replace(/\{\{user\}\}/g, ctx.name1 || 'User')
-                .replace(/\{\{char\}\}/g, ctx.name2 || 'Character');
+                .replace(/\{\{char\}\}/g, ctx.name2 || 'Character')
+                .replace(/\{\{context_block\}\}/g, contextBlock);
             
             // Generate summary using generateRaw
             try {

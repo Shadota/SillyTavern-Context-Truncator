@@ -3125,8 +3125,8 @@ function register_event_listeners() {
     eventSource.on(event_types.CHARACTER_MESSAGE_RENDERED, (id) => {
         if (streamingProcessor && !streamingProcessor.isFinished) return;
 
-        // Auto-summarize (don't await - runs in background)
-        auto_summarize_chat();
+        // Auto-summarize (delay to avoid interfering with message generation)
+        setTimeout(() => auto_summarize_chat(), 500);
 
         // Auto-buffer for Qdrant (if enabled)
         const ctx = getContext();
@@ -3152,8 +3152,8 @@ function register_event_listeners() {
 
     // Auto-summarize and auto-buffer on new user messages
     eventSource.on(event_types.USER_MESSAGE_RENDERED, (id) => {
-        // Auto-summarize (don't await - runs in background)
-        auto_summarize_chat();
+        // Auto-summarize (delay to avoid interfering with message generation)
+        setTimeout(() => auto_summarize_chat(), 500);
 
         // Auto-buffer for Qdrant (if enabled)
         const ctx = getContext();

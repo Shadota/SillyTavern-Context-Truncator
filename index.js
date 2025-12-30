@@ -1768,15 +1768,6 @@ function update_overview_tab() {
         $('#ct_ov_trunc_index').text(TRUNCATION_INDEX !== null ? TRUNCATION_INDEX : '--');
         $('#ct_ov_correction').text(CHAT_TOKEN_CORRECTION_FACTOR.toFixed(3));
         
-        // Calculate and display truncation percentage (what % of chat is truncated)
-        const ctx = getContext();
-        const chat = ctx.chat;
-        const totalNonSystemMessages = chat ? chat.filter(m => !m.is_system).length : 0;
-        const truncatedMessages = TRUNCATION_INDEX || 0;
-        const truncatedPercent = totalNonSystemMessages > 0
-            ? ((truncatedMessages / totalNonSystemMessages) * 100).toFixed(1)
-            : 0;
-        $('#ct_ov_truncated_pct').text(`${truncatedPercent}%`);
     } else {
         // No data available
         $('#ct_gauge_fill').css('width', '0%');
@@ -2039,20 +2030,42 @@ function update_prediction_display() {
 function update_summary_stats_display() {
     const stats = collect_summarization_stats();
     
-    // Calculate truncated count (messages excluded from context)
-    const truncatedCount = stats.truncated;
+    // Calculate counts for Version 2E design
+    const excludedCount = stats.truncated;  // Messages excluded from context
+    const summarizedCount = stats.summarized;  // Excluded messages with summaries
+    const pendingCount = stats.pending + stats.inQueue;  // Excluded messages awaiting summarization
     
-    // Calculate summarization progress for truncated messages only
-    const summarizedCount = stats.summarized;
-    const progressPercent = truncatedCount > 0 ? (summarizedCount / truncatedCount) * 100 : 0;
+    // Calculate coverage percentage (what % of excluded messages have summaries)
+    const coveragePercent = excludedCount > 0 ? (summarizedCount / excludedCount) * 100 : 0;
     
-    // Update Overview tab Summaries card (new design with mini progress bar)
-    $('#ct_ov_truncated_count').text(truncatedCount);
-    $('#ct_ov_sum_text').text(`${summarizedCount} / ${truncatedCount}`);
-    $('#ct_ov_sum_bar_fill').css('width', `${progressPercent}%`);
+    // Update Overview tab Summaries card (Version 2E design)
+    $('#ct_ov_excluded_count').text(`${excludedCount} messages`);
+    $('#ct_ov_summarized_count').text(summarizedCount);
+    $('#ct_ov_pending_count').text(pendingCount);
+    
+    // Update coverage indicator with percentage and appropriate class
+    const $coverageIndicator = $('#ct_ov_summary_coverage');
+    $coverageIndicator.removeClass('ct_coverage_good ct_coverage_partial ct_coverage_low ct_coverage_none');
+    
+    if (excludedCount === 0) {
+        // No excluded messages yet
+        $coverageIndicator.text('--').addClass('ct_coverage_none');
+    } else if (coveragePercent >= 75) {
+        // Good coverage (≥75%)
+        $coverageIndicator.text(`${Math.round(coveragePercent)}% ✓`).addClass('ct_coverage_good');
+    } else if (coveragePercent >= 25) {
+        // Partial coverage (25-75%)
+        $coverageIndicator.text(`${Math.round(coveragePercent)}% ⚠`).addClass('ct_coverage_partial');
+    } else if (coveragePercent > 0) {
+        // Low coverage (<25%)
+        $coverageIndicator.text(`${Math.round(coveragePercent)}% ⚠`).addClass('ct_coverage_low');
+    } else {
+        // No coverage (0%)
+        $coverageIndicator.text('0%').addClass('ct_coverage_none');
+    }
     
     // Legacy: Update old element IDs if they still exist (backwards compatibility)
-    $('#ct_ov_sum_total').text(truncatedCount);
+    $('#ct_ov_sum_total').text(excludedCount);
     $('#ct_ov_sum_done').text(summarizedCount);
     $('#ct_ov_sum_pending').text(stats.pending);
     $('#ct_ov_sum_queue').text(stats.inQueue);

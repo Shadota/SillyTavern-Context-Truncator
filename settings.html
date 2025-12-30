@@ -108,7 +108,7 @@
                 <!-- Simplified Stats Cards Grid -->
                 <div class="ct_stats_grid ct_stats_grid_compact">
                     
-                    <!-- Status Card (merged Truncation + Calibration essentials) -->
+                    <!-- Status Card (Phase + Next Trim only) -->
                     <div class="ct_stats_card">
                         <div class="ct_card_header">
                             <div class="ct_card_header_left">
@@ -137,52 +137,50 @@
                                 </span>
                                 <span id="ct_ov_next_trim" class="ct_stat_value">--</span>
                             </div>
-                            <div class="ct_stat_row">
-                                <span class="ct_stat_label">
-                                    Truncated
-                                    <span class="ct_tooltip">
-                                        <i class="fa-solid fa-circle-info ct_info_icon"></i>
-                                        <span class="ct_tooltip_text">Percentage of chat messages excluded from context</span>
-                                    </span>
-                                </span>
-                                <span id="ct_ov_truncated_pct" class="ct_stat_value">--%</span>
-                            </div>
                         </div>
                     </div>
     
-                    <!-- Summaries Card (redesigned with mini progress bar) -->
+                    <!-- Summaries Card (Version 2E: clean rows with percentage in header) -->
                     <div class="ct_stats_card">
                         <div class="ct_card_header">
                             <div class="ct_card_header_left">
                                 <i class="fa-solid fa-file-lines"></i>
                                 <span>Summaries</span>
                             </div>
+                            <div class="ct_card_header_right">
+                                <span id="ct_ov_summary_coverage" class="ct_coverage_indicator ct_coverage_none">--</span>
+                            </div>
                         </div>
                         <div class="ct_card_content">
                             <div class="ct_stat_row">
                                 <span class="ct_stat_label">
-                                    Truncated
+                                    Excluded
                                     <span class="ct_tooltip">
                                         <i class="fa-solid fa-circle-info ct_info_icon"></i>
-                                        <span class="ct_tooltip_text">Messages excluded from context that need summarization</span>
+                                        <span class="ct_tooltip_text">Messages removed from context to stay within token limits</span>
                                     </span>
                                 </span>
-                                <span id="ct_ov_truncated_count" class="ct_stat_value">--</span>
+                                <span id="ct_ov_excluded_count" class="ct_stat_value">-- messages</span>
                             </div>
-                            <div class="ct_stat_row ct_stat_row_progress">
+                            <div class="ct_stat_row">
                                 <span class="ct_stat_label">
                                     Summarized
                                     <span class="ct_tooltip">
                                         <i class="fa-solid fa-circle-info ct_info_icon"></i>
-                                        <span class="ct_tooltip_text">Progress of summarization for truncated messages</span>
+                                        <span class="ct_tooltip_text">Excluded messages with summaries injected for continuity</span>
                                     </span>
                                 </span>
-                                <span class="ct_stat_value ct_summary_progress_wrapper">
-                                    <span id="ct_ov_sum_text">-- / --</span>
-                                    <div class="ct_mini_progress_bar">
-                                        <div id="ct_ov_sum_bar_fill" class="ct_mini_progress_fill"></div>
-                                    </div>
+                                <span id="ct_ov_summarized_count" class="ct_stat_value">--</span>
+                            </div>
+                            <div class="ct_stat_row">
+                                <span class="ct_stat_label">
+                                    Pending
+                                    <span class="ct_tooltip">
+                                        <i class="fa-solid fa-circle-info ct_info_icon"></i>
+                                        <span class="ct_tooltip_text">Excluded messages awaiting summarization</span>
+                                    </span>
                                 </span>
+                                <span id="ct_ov_pending_count" class="ct_stat_value">--</span>
                             </div>
                         </div>
                     </div>

@@ -593,6 +593,7 @@
 .ct_card_header {
     display: flex;
     align-items: center;
+    justify-content: space-between;
     gap: 8px;
     padding: 10px 12px;
     background: var(--black50a);
@@ -602,6 +603,45 @@
 
 .ct_card_header i {
     opacity: 0.8;
+}
+
+.ct_card_header_right {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+}
+
+/* ==================== COVERAGE INDICATOR ==================== */
+.ct_coverage_indicator {
+    font-size: 0.85em;
+    font-weight: bold;
+    padding: 2px 8px;
+    border-radius: 4px;
+    white-space: nowrap;
+}
+
+/* Good coverage (>75%) - Green */
+.ct_coverage_good {
+    color: #90ee90;
+    background: rgba(76, 175, 80, 0.2);
+}
+
+/* Partial coverage (25-75%) - Yellow */
+.ct_coverage_partial {
+    color: #ffff99;
+    background: rgba(255, 193, 7, 0.2);
+}
+
+/* Low coverage (<25%) - Orange */
+.ct_coverage_low {
+    color: #ffcc80;
+    background: rgba(255, 152, 0, 0.2);
+}
+
+/* No coverage or disabled - Gray */
+.ct_coverage_none {
+    color: #9e9e9e;
+    background: rgba(158, 158, 158, 0.2);
 }
 
 .ct_card_content {

@@ -346,6 +346,24 @@
                         <span class="ct_tooltip_text">Master switch for context truncation. When enabled, messages are excluded from context once target size is reached.</span>
                     </span>
                 </div>
+                
+                <div class="ct_compact_input">
+                    <label for="ct_summary_endpoint_url">
+                        Summary Endpoint (OpenAI-compatible)
+                        <span class="ct_tooltip">
+                            <i class="fa-solid fa-circle-info ct_info_icon"></i>
+                            <span class="ct_tooltip_text">Optional OpenAI-compatible POST endpoint to generate summaries. Leave empty to use SillyTavern's model.</span>
+                        </span>
+                    </label>
+                    <input id="ct_summary_endpoint_url" class="text_pole" type="text" placeholder="https://example.com/v1/chat/completions" />
+                    <input id="ct_summary_endpoint_api_key" class="text_pole" type="password" placeholder="Optional: Bearer API key" />
+                    <div style="margin-top:8px; display:flex; align-items:center; gap:8px;">
+                        <button id="ct_summary_endpoint_test" class="menu_button" title="Test summary endpoint">
+                            <i class="fa-solid fa-vial"></i> Test Summary Endpoint
+                        </button>
+                        <span id="ct_summary_endpoint_status" class="ct_status_message" style="margin-left:6px;"></span>
+                    </div>
+                </div>
 
                 <hr class="ct_section_divider">
 
@@ -423,16 +441,6 @@
                     </span>
                 </div>
 
-                <div class="ct_compact_input">
-                    <label for="ct_connection_profile">
-                        Connection Profile
-                        <span class="ct_tooltip">
-                            <i class="fa-solid fa-circle-info ct_info_icon"></i>
-                            <span class="ct_tooltip_text">Use a different model for summarization. "Same as Current" uses your main model.</span>
-                        </span>
-                    </label>
-                    <select id="ct_connection_profile" class="text_pole"></select>
-                </div>
 
                 <div class="ct_compact_setting">
                     <div class="ct_setting_header">

@@ -50,6 +50,7 @@ const default_settings = {
     // Summarization settings
     auto_summarize: true,
     connection_profile: "",         // Connection profile for summarization (empty = same as current)
+    summary_endpoint_url: "",       // REQ-003: OpenAI-compatible summary endpoint URL (empty = use generateRaw)
     summary_max_words: 50,          // Maximum words per summary
     summary_prompt: `Summarize the following roleplay message into a single, dense sentence.
 
@@ -145,6 +146,9 @@ Recent chat always takes precedence over these notes.
     account_qdrant_tokens: true,
     summary_enhanced_chunks: true,    // Include summaries in chunk text when available
 };
+ 
+// Default timeout for summary endpoint requests
+const SUMMARY_ENDPOINT_TIMEOUT_MS = 10000; // 10s
 
 // Global state
 let TRUNCATION_INDEX = null;  // Current truncation position
@@ -311,107 +315,7 @@ function count_tokens(text, padding = 0) {
     return ctx.getTokenCount(text, padding);
 }
 
-// Connection profile management (for independent summarization model)
-function check_connection_profiles_active() {
-    return getContext().extensionSettings?.connectionManager !== undefined;
-}
-
-async function get_current_connection_profile() {
-    if (!check_connection_profiles_active()) return;
-    const ctx = getContext();
-    const result = await ctx.executeSlashCommandsWithOptions(`/profile`);
-    return result.pipe;
-}
-
-function get_connection_profiles() {
-    if (!check_connection_profiles_active()) return [];
-    return getContext().extensionSettings.connectionManager.profiles;
-}
-
-function get_connection_profile(id) {
-    const data = get_connection_profiles().find((p) => p.id === id);
-    return data;
-}
-
-function verify_connection_profile(id) {
-    if (!check_connection_profiles_active()) return false;
-    if (id === "") return true;  // no profile selected, always valid
-    return get_connection_profile(id) !== undefined;
-}
-
-function get_summary_connection_profile() {
-    const id = get_settings('connection_profile');
-    
-    // Return the selected profile ID if valid, otherwise empty string (use current)
-    if (id !== "" && verify_connection_profile(id) && check_connection_profiles_active()) {
-        return id;
-    }
-    
-    return "";  // Empty = use current profile (no switch needed)
-}
-
-async function set_connection_profile(profileId) {
-    if (!check_connection_profiles_active()) return;
-    if (!profileId) return;  // Empty ID means use current, no switch needed
-    
-    // Look up the profile to get the actual NAME (the /profile command expects a name, not an ID)
-    const profile = get_connection_profile(profileId);
-    if (!profile) {
-        debug(`Profile with ID "${profileId}" not found, cannot switch`);
-        return;
-    }
-    
-    const profileName = profile.name;
-    const currentProfile = await get_current_connection_profile();
-    
-    if (profileName === currentProfile) {
-        debug(`Already using profile "${profileName}", no switch needed`);
-        return;  // Already using this profile
-    }
-    
-    debug(`Switching connection profile from "${currentProfile}" to "${profileName}" (ID: ${profileId})`);
-    const ctx = getContext();
-    await ctx.executeSlashCommandsWithOptions(`/profile ${profileName}`);
-}
-
-// Set connection profile by NAME (used for restoration after summarization)
-// This mirrors SillyTavern-MessageSummarize's approach
-async function set_connection_profile_by_name(profileName) {
-    if (!check_connection_profiles_active()) return;
-    if (!profileName) return;
-    
-    const currentProfile = await get_current_connection_profile();
-    if (profileName === currentProfile) {
-        debug(`Already using profile "${profileName}", no switch needed`);
-        return;
-    }
-    
-    debug(`Switching connection profile to "${profileName}"`);
-    const ctx = getContext();
-    await ctx.executeSlashCommandsWithOptions(`/profile ${profileName}`);
-}
-
-async function update_connection_profile_dropdown() {
-    const $connection_select = $('#ct_connection_profile');
-    const connection_profiles = get_connection_profiles();
-    
-    $connection_select.empty();
-    $connection_select.append(`<option value="">Same as Current</option>`);
-    
-    for (let profile of connection_profiles) {
-        $connection_select.append(`<option value="${profile.id}">${profile.name}</option>`);
-    }
-    
-    const profile_id = get_settings('connection_profile');
-    if (!verify_connection_profile(profile_id)) {
-        debug(`Selected summary connection profile ID is invalid: ${profile_id}`);
-    }
-    
-    $connection_select.val(profile_id);
-    
-    // Refresh dropdown on click
-    $connection_select.off('click').on('click', () => update_connection_profile_dropdown());
-}
+// Connection profile helpers removed — summarization now uses an independent OpenAI-compatible endpoint (ct_summary_endpoint_url)
 
 // Message data management (stores summaries and flags on messages)
 function set_data(message, key, value) {
@@ -2938,32 +2842,8 @@ class SummaryQueue {
         
         debug(`Summarizing message ${index}...`);
         
-        // === CONNECTION PROFILE SWITCHING ===
-        // Save current profile and switch to summary profile if configured
-        let originalProfile = null;
-        const summaryProfileId = get_summary_connection_profile();  // Returns ID
-        
-        if (summaryProfileId) {
-            // A specific profile is configured for summarization
-            // Get the profile data to get the NAME (for comparison with current)
-            const summaryProfileData = get_connection_profile(summaryProfileId);
-            const summaryProfileName = summaryProfileData ? summaryProfileData.name : null;
-            
-            if (summaryProfileName) {
-                originalProfile = await get_current_connection_profile();  // Returns NAME
-                if (originalProfile !== summaryProfileName) {
-                    debug(`Switching from profile "${originalProfile}" to "${summaryProfileName}" (ID: ${summaryProfileId}) for summarization`);
-                    await set_connection_profile(summaryProfileId);  // Pass ID, function converts to name
-                } else {
-                    // Already using the correct profile, no need to restore later
-                    debug(`Already using summary profile "${summaryProfileName}", no switch needed`);
-                    originalProfile = null;
-                }
-            } else {
-                debug(`Summary profile ID "${summaryProfileId}" not found in available profiles`);
-            }
-        }
-        // === END CONNECTION PROFILE SWITCHING ===
+        // Summarization no longer switches global connection profile;
+        // it uses summary_endpoint_url (if set) or falls back to generateRaw().
         
         try {
             // Create summary prompt with placeholders
@@ -3105,14 +2985,6 @@ class SummaryQueue {
                 refresh_memory();
             }
         } finally {
-            // === RESTORE CONNECTION PROFILE ===
-            // Always restore the original profile, even if an error occurred
-            if (originalProfile) {
-                debug(`Restoring original profile "${originalProfile}"`);
-                // Use set_connection_profile_by_name since originalProfile is a NAME, not an ID
-                await set_connection_profile_by_name(originalProfile);
-            }
-            // === END RESTORE CONNECTION PROFILE ===
         }
     }
 }
@@ -3320,8 +3192,9 @@ function initialize_ui_listeners() {
     bind_setting('#ct_enabled', 'enabled', 'boolean');
     bind_setting('#ct_target_size', 'target_context_size', 'number');
     bind_setting('#ct_auto_summarize', 'auto_summarize', 'boolean');
-    bind_setting('#ct_connection_profile', 'connection_profile', 'text');
-    
+    bind_setting('#ct_summary_endpoint_url', 'summary_endpoint_url', 'text');
+    bind_setting('#ct_summary_endpoint_api_key', 'summary_endpoint_api_key', 'text');
+
     // Per-module debug settings
     bind_setting('#ct_debug_truncation', 'debug_truncation', 'boolean');
     
@@ -3437,6 +3310,7 @@ function initialize_ui_listeners() {
     
     // Qdrant action buttons
     $('#ct_qdrant_test').on('click', test_qdrant_connection);
+    $('#ct_summary_endpoint_test').on('click', test_summary_endpoint);
     $('#ct_test_embedding').on('click', test_embedding);
     // Index button toggles between start and stop
     $('#ct_index_chats').on('click', () => {
@@ -3808,6 +3682,143 @@ async function test_qdrant_connection() {
         error('Qdrant connection test failed:', e);
     }
 }
+// Test Summary Endpoint (OpenAI-compatible)
+async function test_summary_endpoint() {
+    const $status = $('#ct_summary_endpoint_status');
+    const $button = $('#ct_summary_endpoint_test');
+
+    // Read values from UI or fallback to settings
+    const urlInput = ($('#ct_summary_endpoint_url').length ? $('#ct_summary_endpoint_url').val() : null) || get_settings('summary_endpoint_url');
+    const apiKeyInput = ($('#ct_summary_endpoint_api_key').length ? $('#ct_summary_endpoint_api_key').val() : null) || get_settings('summary_endpoint_api_key');
+
+    if (!urlInput) {
+        $status.removeClass().addClass('ct_status_message ct_status_error').text('Invalid URL');
+        return;
+    }
+
+    let parsedUrl;
+    try {
+        parsedUrl = new URL(urlInput);
+    } catch (e) {
+        $status.removeClass().addClass('ct_status_message ct_status_error').text('Invalid URL');
+        return;
+    }
+
+    $status.removeClass().addClass('ct_status_message ct_status_info').text('Testing connection...');
+    $button.prop('disabled', true);
+
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 10000);
+
+    const headers = { 'Content-Type': 'application/json' };
+    if (apiKeyInput) headers['Authorization'] = `Bearer ${apiKeyInput}`;
+
+    const body = JSON.stringify({
+        model: 'gpt-3.5-turbo',
+        messages: [{ role: 'user', content: 'Context Truncator test -> reply "ok"' }],
+        max_tokens: 8,
+        temperature: 0.2
+    });
+
+    try {
+        const resp = await fetch(parsedUrl.toString(), {
+            method: 'POST',
+            headers: headers,
+            body: body,
+            signal: controller.signal
+        });
+
+        clearTimeout(timeout);
+
+        if (resp.ok) {
+            let dataText = '';
+            try {
+                const data = await resp.json();
+                dataText = (data?.choices && data.choices[0]) ? (data.choices[0].message?.content || data.choices[0].text) : (data?.text || '');
+            } catch (e) {
+                // Not JSON or unexpected shape
+                const text = await resp.text();
+                dataText = text;
+            }
+
+            if (dataText && dataText.toString().trim().length > 0) {
+                const sample = dataText.toString().trim().substring(0, 120);
+                $status.removeClass().addClass('ct_status_message ct_status_success').text(`Connected! Sample reply: "${sample}"`);
+            } else {
+                $status.removeClass().addClass('ct_status_message ct_status_error').text('Unexpected response shape');
+            }
+
+        } else if (resp.status === 401 || resp.status === 403) {
+            $status.removeClass().addClass('ct_status_message ct_status_error').text(`Authentication failed (HTTP ${resp.status})`);
+        } else {
+            $status.removeClass().addClass('ct_status_message ct_status_error').text(`Connection failed: HTTP ${resp.status}: ${resp.statusText}`);
+        }
+    } catch (e) {
+        clearTimeout(timeout);
+        if (e.name === 'AbortError') {
+            $status.removeClass().addClass('ct_status_message ct_status_error').text('Connection timed out (10s)');
+        } else if (e instanceof TypeError) {
+            $status.removeClass().addClass('ct_status_message ct_status_error').text(`Network/CORS error: ${e.message}`);
+        } else {
+            $status.removeClass().addClass('ct_status_message ct_status_error').text(`Error: ${e.message || String(e)}`);
+        }
+    } finally {
+        $button.prop('disabled', false);
+    }
+}
+
+
+// Call summary endpoint (OpenAI-compatible). Returns the raw model output as string.
+async function call_summary_endpoint(prompt) {
+    const url = get_settings('summary_endpoint_url');
+    const apiKey = get_settings('summary_endpoint_api_key');
+
+    if (!url) throw new Error('No summary endpoint configured');
+
+    let parsed;
+    try { parsed = new URL(url); } catch (e) { throw new Error('Invalid summary endpoint URL'); }
+
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 10000);
+
+    const headers = { 'Content-Type': 'application/json' };
+    if (apiKey) headers['Authorization'] = `Bearer ${apiKey}`;
+
+    const body = JSON.stringify({
+        model: 'gpt-3.5-turbo',
+        messages: [{ role: 'user', content: prompt }],
+        max_tokens: 200,
+        temperature: 0.2
+    });
+
+    try {
+        const resp = await fetch(parsed.toString(), {
+            method: 'POST',
+            headers,
+            body,
+            signal: controller.signal
+        });
+
+        clearTimeout(timeout);
+
+        if (!resp.ok) {
+            const text = await resp.text();
+            throw new Error(`HTTP ${resp.status}: ${text}`);
+        }
+
+        let data;
+        try { data = await resp.json(); } catch (e) { const txt = await resp.text(); return txt; }
+
+        const content = (data?.choices && data.choices[0]) ? (data.choices[0].message?.content || data.choices[0].text) : (data?.text || '');
+        return content ?? '';
+    } catch (e) {
+        clearTimeout(timeout);
+        if (e.name === 'AbortError') throw new Error('Connection timed out (10s)');
+        if (e instanceof TypeError) throw new Error(`Network/CORS error: ${e.message}`);
+        throw e;
+    }
+}
+
 
 // Test embedding endpoint
 async function test_embedding() {

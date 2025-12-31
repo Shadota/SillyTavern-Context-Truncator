@@ -839,10 +839,20 @@ function calculate_truncation_index() {
     debug_trunc(`  Target full: ${targetSize} tokens`);
     debug_trunc(`  Over target by: ${currentPromptSize - targetSize} tokens`);
     
-    // If we're under target, no truncation needed
+    // Check if we're under target
     if (currentPromptSize <= targetSize) {
-        debug_trunc('Under target, no truncation needed');
-        return 0;
+        // If no truncation is currently active, return 0
+        if (!TRUNCATION_INDEX || TRUNCATION_INDEX === 0) {
+            debug_trunc('Under target with no active truncation, returning 0');
+            return 0;
+        }
+        
+        // We're under target but have truncation - we should try to REDUCE it
+        // to include more messages and better utilize the context budget
+        debug_trunc(`Under target (${currentPromptSize} <= ${targetSize}) but truncation active (${TRUNCATION_INDEX})`);
+        debug_trunc('Will attempt to reduce truncation to include more messages...');
+        
+        // Fall through to the rest of the function which will try to optimize
     }
     
     // Get the current truncation index (or start at 0)
@@ -991,7 +1001,42 @@ function calculate_truncation_index() {
         }
     }
     
-    const finalIndex = Math.max(nextIndex, currentIndex);
+    // V26: If we're under target AND have truncation, try to REDUCE it
+    // This recovers context space when summaries are smaller than originals
+    let finalIndex = Math.max(nextIndex, currentIndex);
+    
+    // Check if we have room to include more messages
+    const currentTotal = estimateChatSize(finalIndex) + nonChatBudget;
+    if (currentTotal < targetSize && finalIndex > 0) {
+        debug_trunc(`  `);
+        debug_trunc(`  === REDUCING TRUNCATION (V26) ===`);
+        debug_trunc(`  Current index: ${finalIndex}, current total: ${currentTotal}`);
+        debug_trunc(`  Headroom: ${targetSize - currentTotal} tokens`);
+        
+        // Greedily include more messages while under target
+        let reducedIndex = finalIndex;
+        while (reducedIndex > 0) {
+            // Calculate size if we include one more message
+            const candidateSize = estimateChatSize(reducedIndex - 1);
+            const candidateTotal = candidateSize + nonChatBudget;
+            
+            if (candidateTotal <= targetSize) {
+                reducedIndex--;
+                debug_trunc(`    Including message ${reducedIndex}, new total: ${candidateTotal}`);
+            } else {
+                debug_trunc(`    Cannot include message ${reducedIndex - 1}, would exceed: ${candidateTotal}`);
+                break;
+            }
+        }
+        
+        if (reducedIndex < finalIndex) {
+            const tokensRecovered = estimateChatSize(reducedIndex) - estimateChatSize(finalIndex);
+            debug_trunc(`  Reduced truncation: ${finalIndex} → ${reducedIndex} (recovered ~${Math.abs(tokensRecovered)} tokens)`);
+            finalIndex = reducedIndex;
+        } else {
+            debug_trunc(`  Could not reduce truncation further`);
+        }
+    }
     
     const predictedChatSize = estimateChatSize(finalIndex);
     const predictedTotal = predictedChatSize + nonChatBudget;
@@ -1057,11 +1102,10 @@ function update_message_inclusion_flags() {
         TRUNCATION_INDEX = null;
     }
     
-    // Calculate new truncation index if needed
-    if (TRUNCATION_INDEX === null || TRUNCATION_INDEX === 0) {
-        TRUNCATION_INDEX = calculate_truncation_index();
-        save_truncation_index();
-    }
+    // V26: ALWAYS recalculate truncation index on each refresh
+    // This ensures we both ADD truncation when over target AND REMOVE truncation when under target
+    TRUNCATION_INDEX = calculate_truncation_index();
+    save_truncation_index();
     
     // Sanity check: ensure truncation index doesn't exceed chat length
     if (TRUNCATION_INDEX > chat.length) {

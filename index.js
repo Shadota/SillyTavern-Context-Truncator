@@ -49,7 +49,7 @@ const default_settings = {
     
     // Summarization settings
     auto_summarize: true,
-    connection_profile: "",         // Connection profile for summarization (empty = same as current)
+    connection_profile: "",         // DEPRECATED: Connection profile dropdown removed — summarization uses independent summary_endpoint_url
     summary_endpoint_url: "",       // REQ-003: OpenAI-compatible summary endpoint URL (empty = use generateRaw)
     summary_max_words: 50,          // Maximum words per summary
     summary_prompt: `Summarize the following roleplay message into a single, dense sentence.
@@ -3215,8 +3215,7 @@ function initialize_ui_listeners() {
     // Max words per summary (now a slider)
     bind_range_setting('#ct_max_words', 'summary_max_words', '#ct_max_words_display');
     
-    // Initialize connection profile dropdown
-    update_connection_profile_dropdown();
+    // Connection profile dropdown removed — summarization uses independent summary_endpoint_url
     
     // Reset All button (combines reset truncation + reset calibration)
     $('#ct_reset_all').on('click', () => {

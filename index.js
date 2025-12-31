@@ -1430,11 +1430,9 @@ function calibrate_target_size(actualSize) {
     const idealTarget = Math.floor(maxContext * targetUtilization);
     
     // Calculate the threshold for when to start calibrating
-    // Use target_utilization * max_context if auto-calibration is enabled
-    // Otherwise use target_context_size as the threshold
-    const startThreshold = autoCalibrate
-        ? Math.floor(maxContext * targetUtilization)
-        : get_settings('target_context_size');
+    // ALWAYS use target_context_size as threshold
+    // The ideal (maxContext * targetUtilization) is what we calibrate TOWARD, not what we wait FOR
+    const startThreshold = get_settings('target_context_size');
     
     // Update Qdrant token history for averaging (Fix 3.2)
     update_qdrant_token_history();
@@ -1682,9 +1680,8 @@ function update_calibration_ui() {
     
     const maxContext = getMaxContextSize();
     const autoCalibrate = get_settings('auto_calibrate_target');
-    const startThreshold = autoCalibrate
-        ? Math.floor(maxContext * get_settings('target_utilization'))
-        : get_settings('target_context_size');
+    // Threshold is always target_context_size (matches calibrate_target_size logic)
+    const startThreshold = get_settings('target_context_size');
     
     switch (CALIBRATION_STATE) {
         case 'WAITING':
@@ -1889,9 +1886,8 @@ function update_overview_tab() {
         let progressText = '--';
         
         const autoCalibrate = get_settings('auto_calibrate_target');
-        const startThreshold = autoCalibrate
-            ? Math.floor(maxContext * get_settings('target_utilization'))
-            : get_settings('target_context_size');
+        // Threshold is always target_context_size (matches calibrate_target_size logic)
+        const startThreshold = get_settings('target_context_size');
         
         switch (CALIBRATION_STATE) {
             case 'WAITING':

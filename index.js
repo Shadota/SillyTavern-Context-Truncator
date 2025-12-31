@@ -59,7 +59,7 @@ const default_settings = {
     summary_endpoint_timeout: 15000,  // Timeout in ms (increased from 10s)
     summary_request_delay: 500,       // Delay between requests in ms
     summary_max_retries: 3,           // Max retry attempts on transient errors
-    summary_max_tokens: 500,          // Max tokens for summary generation (increased for GLM-4 compatibility)
+    summary_max_tokens: 800,          // Max tokens for summary generation (increased for GLM-4 compatibility)
     summary_prompt: `Summarize the following roleplay message into a single, dense sentence.
 
 NAMES: {{user}} is the user's character. {{char}} is the AI character.
@@ -4091,11 +4091,14 @@ async function call_summary_endpoint(prompt, options = {}) {
             { role: 'system', content: 'You are a helpful assistant. Respond directly without showing your thinking process.' },
             { role: 'user', content: prompt }
         ],
-        max_tokens: maxTokensOverride || get_settings('summary_max_tokens') || 500,
-        temperature: 0.2
-        // NOTE: enable_thinking is NOT a valid OpenAI API parameter
-        // It only exists in Zhipu's GLM cloud API (https://open.bigmodel.cn/dev/api/normal-model/glm-4)
-        // Thinking content from GLM-4.5 is handled by clean_summary_output() which strips <think> blocks
+        max_tokens: maxTokensOverride || get_settings('summary_max_tokens') || 800,
+        temperature: 0.2,
+        thinking: { type: 'disabled' }  // GLM-4: Disable deep thinking mode to prevent <think> blocks
+        // NOTE: The `thinking` parameter is GLM-4 specific but harmless for other APIs.
+        // - GLM-4 models via TabbyAPI: Prevents ~400+ token <think> blocks from consuming token budget
+        // - OpenAI/Anthropic/other APIs: Silently ignored (not part of their API spec)
+        // - Fallback defense: clean_summary_output() strips any <think> blocks that slip through
+        // Without this, GLM-4.5 Air exhausts the 800 token budget with thinking, truncating summaries mid-sentence
     });
 
     try {

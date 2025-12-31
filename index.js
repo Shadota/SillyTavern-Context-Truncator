@@ -55,6 +55,7 @@ const default_settings = {
     summary_endpoint_timeout: 15000,  // Timeout in ms (increased from 10s)
     summary_request_delay: 500,       // Delay between requests in ms
     summary_max_retries: 3,           // Max retry attempts on transient errors
+    summary_max_tokens: 500,          // Max tokens for summary generation (increased for GLM-4 compatibility)
     summary_prompt: `Summarize the following roleplay message into a single, dense sentence.
 
 NAMES: {{user}} is the user's character. {{char}} is the AI character.
@@ -164,6 +165,7 @@ let $DRAWER_CONTENT = null;
 // Indexing state (for Qdrant)
 let INDEXING_ACTIVE = false;
 let INDEXING_STOPPED = false;
+let INDEXING_ABORT_CONTROLLER = null;
 
 // Calibration state machine
 // States: WAITING -> INITIAL_TRAINING -> CALIBRATING -> RETRAINING -> STABLE
@@ -398,22 +400,36 @@ function get_prompt_chat_segments_from_raw(raw_prompt) {
         return null;
     }
     
-    // Match Llama 3 style headers: <|eot_id|><|start_header_id|>role<|end_header_id|>
-    const header_regex = /<\|eot_id\|><\|start_header_id\|>(user|assistant|system)<\|end_header_id\|>/g;
+    // Try ChatML format first: <|im_start|>role
+    const chatml_regex = /<\|im_start\|>(user|assistant|system)\n/g;
     let matches = [];
     let match;
     
-    while ((match = header_regex.exec(raw_prompt)) !== null) {
+    // Check for ChatML format
+    while ((match = chatml_regex.exec(raw_prompt)) !== null) {
         matches.push({
             index: match.index,
             role: match[1],
+            format: 'chatml'
         });
     }
     
-    debug(`  get_prompt_chat_segments_from_raw: Found ${matches.length} header matches`);
+    // If no ChatML, try Llama 3 format
+    if (matches.length === 0) {
+        const llama3_regex = /<\|eot_id\|><\|start_header_id\|>(user|assistant|system)<\|end_header_id\|>/g;
+        while ((match = llama3_regex.exec(raw_prompt)) !== null) {
+            matches.push({
+                index: match.index,
+                role: match[1],
+                format: 'llama3'
+            });
+        }
+    }
+    
+    debug(`  get_prompt_chat_segments_from_raw: Found ${matches.length} header matches (format: ${matches[0]?.format || 'none'})`);
     
     if (matches.length === 0) {
-        debug('  get_prompt_chat_segments_from_raw: No headers found, might not be Llama 3 format');
+        debug('  get_prompt_chat_segments_from_raw: No headers found, not Llama 3 or ChatML format');
         return null;
     }
     
@@ -427,7 +443,16 @@ function get_prompt_chat_segments_from_raw(raw_prompt) {
             continue;
         }
         
-        let end_index = next ? next.index : raw_prompt.length;
+        let end_index;
+        if (current.format === 'chatml') {
+            // ChatML ends with <|im_end|>
+            const endMarker = raw_prompt.indexOf('<|im_end|>', current.index);
+            end_index = endMarker !== -1 ? endMarker + 10 : (next ? next.index : raw_prompt.length);
+        } else {
+            // Llama 3 ends at next header or end of prompt
+            end_index = next ? next.index : raw_prompt.length;
+        }
+        
         let segment = raw_prompt.slice(current.index, end_index);
         
         segments.push({
@@ -1031,6 +1056,13 @@ function update_message_inclusion_flags() {
         save_truncation_index();
     }
     
+    // Sanity check: ensure truncation index doesn't exceed chat length
+    if (TRUNCATION_INDEX > chat.length) {
+        debug_trunc(`WARNING: TRUNCATION_INDEX (${TRUNCATION_INDEX}) exceeds chat length (${chat.length}), capping to chat length`);
+        TRUNCATION_INDEX = chat.length;
+        save_truncation_index();
+    }
+    
     debug(`Truncation index: ${TRUNCATION_INDEX}`);
     
     // Mark messages as lagging (excluded) or not
@@ -1253,7 +1285,7 @@ function update_status_display() {
         // Fix 2.1: Adaptive EMA alpha based on error magnitude
         // Smaller errors = smaller alpha (more stable), larger errors = larger alpha (faster correction)
         const errorMagnitude = Math.abs(newCorrectionFactor - oldCorrectionFactor);
-        const baseAlpha = 0.15;  // Reduced from 0.3 for more stability
+        const baseAlpha = 0.25;  // Increased from 0.15 for faster convergence
         const maxAlpha = 0.4;    // Maximum alpha for large errors
         const adaptiveAlpha = Math.min(baseAlpha + (errorMagnitude * 0.5), maxAlpha);
         
@@ -1278,6 +1310,15 @@ function update_status_display() {
         debug_trunc(`  New correction factor: ${newCorrectionFactor.toFixed(3)}`);
         debug_trunc(`  Smoothed factor: ${CHAT_TOKEN_CORRECTION_FACTOR.toFixed(3)} (was ${oldCorrectionFactor.toFixed(3)})`);
         debug_trunc(`═══════════════════════════════════════════════════════════════`);
+        
+        // Log comparison for debugging context mismatch issues
+        debug_trunc(`  `);
+        debug_trunc(`  === TOKENIZER COMPARISON ===`);
+        debug_trunc(`  Extension tokenizer: ${actualSize} tokens`);
+        debug_trunc(`  Correction factor: ${CHAT_TOKEN_CORRECTION_FACTOR.toFixed(3)}`);
+        debug_trunc(`  Corrected estimate: ${Math.floor(actualSize * CHAT_TOKEN_CORRECTION_FACTOR)} tokens`);
+        debug_trunc(`  NOTE: Compare 'Corrected estimate' with your API's reported token count`);
+        debug_trunc(`  If they differ significantly, click 'Force Recalibrate' in Overview tab`);
     }
     
     // Determine color based on error percentage
@@ -1678,7 +1719,11 @@ function update_overview_tab() {
     // Update Gauge
     if (last_raw_prompt && maxContext > 0) {
         actualSize = count_tokens(last_raw_prompt);
-        const utilization = (actualSize / maxContext * 100);
+        
+        // Calculate CORRECTED estimate (what API will actually receive)
+        // This is what users care about - not the internal tokenizer output
+        const correctedActualSize = Math.floor(actualSize * CHAT_TOKEN_CORRECTION_FACTOR);
+        const utilization = (correctedActualSize / maxContext * 100);
         
         // Sanity check - utilization should be between 0 and 150%
         if (utilization >= 0 && utilization <= 150) {
@@ -1690,8 +1735,9 @@ function update_overview_tab() {
             $gaugeFill.css('width', `${Math.min(utilization, 100)}%`);
             // ... rest of gauge update
 
+            // Show CORRECTED value with "(est)" suffix to indicate it's estimated
             $('#ct_gauge_value').text(`${utilization.toFixed(1)}%`);
-            $('#ct_gauge_max').text(`of ${maxContext.toLocaleString()} tokens`);
+            $('#ct_gauge_max').text(`of ${maxContext.toLocaleString()} tokens (est)`);
         } else {
             // Invalid utilization - use cached or show placeholder
             if (LAST_VALID_UTILIZATION !== null) {
@@ -1727,10 +1773,16 @@ function update_overview_tab() {
         const qdrantTokens = get_qdrant_injection_tokens();
         // System is everything else (total - chat - worldRules - summaries - qdrant)
         const systemTokens = Math.max(0, actualSize - chatTokens - worldRulesTokens - summaryTokens - qdrantTokens);
-        const freeTokens = Math.max(0, maxContext - actualSize);
         
-        const chatPct = (chatTokens / maxContext * 100);
-        const systemPct = (systemTokens / maxContext * 100);
+        // Use corrected values for breakdown so it matches the gauge
+        const correctedChatTokens = Math.floor(chatTokens * CHAT_TOKEN_CORRECTION_FACTOR);
+        const correctedSystemTokens = Math.floor(systemTokens * CHAT_TOKEN_CORRECTION_FACTOR);
+        // NOTE: Summary and Qdrant tokens are already counted separately and don't need correction
+        const correctedActualSize = Math.floor(actualSize * CHAT_TOKEN_CORRECTION_FACTOR);
+        const freeTokens = Math.max(0, maxContext - correctedActualSize);
+        
+        const chatPct = (correctedChatTokens / maxContext * 100);
+        const systemPct = (correctedSystemTokens / maxContext * 100);
         const worldRulesPct = (worldRulesTokens / maxContext * 100);
         const summaryPct = (summaryTokens / maxContext * 100);
         const qdrantPct = (qdrantTokens / maxContext * 100);
@@ -1743,14 +1795,14 @@ function update_overview_tab() {
         $('#ct_breakdown_qdrant').css('width', `${qdrantPct}%`);
         $('#ct_breakdown_free').css('width', `${freePct}%`);
         
-        // Update token counts in foldable section
-        $('#ct_breakdown_chat_tokens').text(`${chatTokens.toLocaleString()} tokens`);
-        $('#ct_breakdown_system_tokens').text(`${systemTokens.toLocaleString()} tokens`);
+        // Update token counts in foldable section with corrected values
+        $('#ct_breakdown_chat_tokens').text(`${correctedChatTokens.toLocaleString()} tokens`);
+        $('#ct_breakdown_system_tokens').text(`${correctedSystemTokens.toLocaleString()} tokens`);
         $('#ct_breakdown_worldrules_tokens').text(`${worldRulesTokens.toLocaleString()} tokens`);
         $('#ct_breakdown_summaries_tokens').text(`${summaryTokens.toLocaleString()} tokens`);
         $('#ct_breakdown_qdrant_tokens').text(`${qdrantTokens.toLocaleString()} tokens`);
         $('#ct_breakdown_free_tokens').text(`${freeTokens.toLocaleString()} tokens`);
-        $('#ct_breakdown_total_tokens').html(`<strong>${actualSize.toLocaleString()} / ${maxContext.toLocaleString()} tokens</strong>`);
+        $('#ct_breakdown_total_tokens').html(`<strong>${correctedActualSize.toLocaleString()} / ${maxContext.toLocaleString()} tokens (est)</strong>`);
         
         // Update Truncation Stats Card (now simplified)
         const targetSize = get_settings('target_context_size');
@@ -1769,7 +1821,19 @@ function update_overview_tab() {
         $('#ct_ov_difference').text(`${difference > 0 ? '+' : ''}${difference.toLocaleString()}`);
         $('#ct_ov_error').text(`${percentError.toFixed(1)}%`);
         $('#ct_ov_trunc_index').text(TRUNCATION_INDEX !== null ? TRUNCATION_INDEX : '--');
-        $('#ct_ov_correction').text(CHAT_TOKEN_CORRECTION_FACTOR.toFixed(3));
+        // Display correction factor with color coding
+        const factor = CHAT_TOKEN_CORRECTION_FACTOR;
+        $('#ct_ov_correction').text(factor.toFixed(3));
+        
+        // Color code: green if reasonable (0.7-1.1), yellow if borderline, red if extreme
+        $('#ct_ov_correction').removeClass('ct_text_green ct_text_yellow ct_text_red');
+        if (factor >= 0.7 && factor <= 1.1) {
+            // Reasonable range - no special color
+        } else if (factor >= 0.5 && factor <= 1.3) {
+            $('#ct_ov_correction').addClass('ct_text_yellow');
+        } else {
+            $('#ct_ov_correction').addClass('ct_text_red');
+        }
         
     } else {
         // No data available
@@ -2743,16 +2807,25 @@ class SummaryQueue {
 
             let cleaned = text.trim();
 
-            // CRITICAL FIX: Handle responses that START with <think>
-            // Reasoning models output thinking FIRST, then the actual content
-            if (cleaned.toLowerCase().startsWith('<think>')) {
-                const closeIdx = cleaned.toLowerCase().indexOf('</think>');
+            // CRITICAL FIX: Handle responses that contain <think> anywhere (not just start)
+            // Reasoning models output thinking, then the actual summary content
+            const thinkStartIdx = cleaned.toLowerCase().indexOf('<think>');
+            if (thinkStartIdx !== -1) {
+                const closeIdx = cleaned.toLowerCase().indexOf('</think>', thinkStartIdx);
                 if (closeIdx !== -1) {
-                    // Extract only content AFTER the thinking block
-                    cleaned = cleaned.substring(closeIdx + 8).trim();
+                    // Extract content AFTER the think block (this is the actual summary)
+                    const afterThink = cleaned.substring(closeIdx + 8).trim();
+                    if (afterThink.length > 0) {
+                        cleaned = afterThink;
+                        debug_trunc(`Extracted ${afterThink.length} chars after </think> block`);
+                    } else {
+                        // Think block exists but no content after it
+                        debug_trunc('Summary contains only <think> block with no content after, returning empty');
+                        return '';
+                    }
                 } else {
-                    // No closing tag = response is incomplete thinking = invalid
-                    debug(`Summary contains unclosed <think> block, returning empty`);
+                    // No closing tag - content was truncated mid-thinking
+                    debug_trunc('Summary contains unclosed <think> block, returning empty');
                     return '';
                 }
             }
@@ -3024,6 +3097,24 @@ class SummaryQueue {
                     // Clean the output - remove any thinking content that might have snuck through
                     let summary = this.clean_summary_output(rawSummary);
 
+                    // Retry once with doubled tokens if summary too short
+                    if (summary.length < 10) {
+                        debug_trunc(`Summary too short (${summary.length} chars), retrying with 2x tokens`);
+                        const doubledTokens = (get_settings('summary_max_tokens') || 500) * 2;
+                        try {
+                            const retryResult = await call_summary_endpoint(prompt, {
+                                signal: this.abortController?.signal,
+                                maxTokensOverride: doubledTokens
+                            });
+                            if (retryResult) {
+                                summary = this.clean_summary_output(retryResult);
+                                debug_trunc(`Retry produced ${summary.length} char summary`);
+                            }
+                        } catch (retryErr) {
+                            debug_trunc(`Retry failed: ${retryErr.message}`);
+                        }
+                    }
+
                     // If cleaning removed the speaker label, add it back
                     if (!summary.includes(':')) {
                         summary = speakerLabel + ' ' + summary;
@@ -3034,9 +3125,10 @@ class SummaryQueue {
                         summary = trimToEndSentence(summary);
                     }
 
-                    // Validate the summary looks reasonable
+                    // Validate the summary looks reasonable and mark for review if still too short
                     if (summary.length < 10) {
-                        debug(`Warning: Summary too short (${summary.length}), may need review`);
+                        debug_trunc(`Warning: Summary still too short after retry (${summary.length}), marking for review`);
+                        set_data(message, 'needs_manual_review', true);
                     } else if (summary.length > 300) {
                         // Truncate overly long summaries (shouldn't happen with prefill but safety measure)
                         debug(`Warning: Summary too long (${summary.length}), truncating`);
@@ -3314,6 +3406,18 @@ function initialize_ui_listeners() {
         reset_truncation_index();
         reset_calibration();
         toastr.info('Reset complete - truncation and calibration cleared', MODULE_NAME_FANCY);
+    });
+    
+    // Force Recalibrate button - resets ONLY the correction factor (not truncation index)
+    $('#ct_force_recalibrate').on('click', () => {
+        CHAT_TOKEN_CORRECTION_FACTOR = 1.0;
+        CALIBRATION_STATE = 'INITIAL_TRAINING';
+        GENERATION_COUNT = 0;
+        STABLE_COUNT = 0;
+        save_truncation_index();
+        update_calibration_ui();
+        update_overview_tab();
+        toastr.info('Correction factor reset to 1.0 - will recalibrate on next generation', MODULE_NAME_FANCY);
     });
     
     // Summarize all button (toggles between start and stop)
@@ -3867,7 +3971,7 @@ function extract_model_content(data) {
 }
 
 async function call_summary_endpoint(prompt, options = {}) {
-    const { signal = null, attempt = 0 } = options;
+    const { signal = null, attempt = 0, maxTokensOverride = null } = options;
     const url = get_settings('summary_endpoint_url');
     const apiKey = get_settings('summary_endpoint_api_key');
     const maxRetries = get_settings('summary_max_retries') || 3;
@@ -3891,9 +3995,13 @@ async function call_summary_endpoint(prompt, options = {}) {
 
     const body = JSON.stringify({
         model: 'gpt-3.5-turbo',
-        messages: [{ role: 'user', content: prompt }],
-        max_tokens: 200,
-        temperature: 0.2
+        messages: [
+            { role: 'system', content: 'You are a helpful assistant. Respond directly without showing your thinking process.' },
+            { role: 'user', content: prompt }
+        ],
+        max_tokens: maxTokensOverride || get_settings('summary_max_tokens') || 500,
+        temperature: 0.2,
+        enable_thinking: false
     });
 
     try {
@@ -3996,7 +4104,7 @@ async function test_embedding() {
 }
 
 // Generate embedding using KoboldCPP/local endpoint (OpenAI-compatible format)
-async function generate_embedding(text) {
+async function generate_embedding(text, signal = null) {
     const url = get_settings('embedding_url');
     const apiKey = get_settings('embedding_api_key');
     
@@ -4024,7 +4132,8 @@ async function generate_embedding(text) {
                 body: JSON.stringify({
                     input: text,
                     model: 'text-embedding'  // KoboldCPP ignores this but it's required for format
-                })
+                }),
+                signal: signal
             });
             
             if (!response.ok) {
@@ -4032,7 +4141,15 @@ async function generate_embedding(text) {
                 if (response.status === 503 && attempt < MAX_RETRIES) {
                     const delay = BASE_DELAY * Math.pow(2, attempt);
                     debug_qdrant(`Embedding endpoint 503 error, retrying in ${delay}ms (attempt ${attempt + 1}/${MAX_RETRIES})`);
-                    await new Promise(resolve => setTimeout(resolve, delay));
+                    await new Promise((resolve, reject) => {
+                        const timeout = setTimeout(resolve, delay);
+                        if (signal) {
+                            signal.addEventListener('abort', () => {
+                                clearTimeout(timeout);
+                                reject(new DOMException('Aborted', 'AbortError'));
+                            }, { once: true });
+                        }
+                    });
                     continue;
                 }
                 
@@ -4054,11 +4171,24 @@ async function generate_embedding(text) {
             
             throw new Error('Unexpected embedding response format');
         } catch (err) {
+            // Check for abort
+            if (err.name === 'AbortError') {
+                throw err;
+            }
+            
             // Network errors or other exceptions
             if (attempt < MAX_RETRIES && (err.message.includes('fetch') || err.message.includes('network'))) {
                 const delay = BASE_DELAY * Math.pow(2, attempt);
                 debug_qdrant(`Embedding generation error: ${err.message}, retrying in ${delay}ms (attempt ${attempt + 1}/${MAX_RETRIES})`);
-                await new Promise(resolve => setTimeout(resolve, delay));
+                await new Promise((resolve, reject) => {
+                    const timeout = setTimeout(resolve, delay);
+                    if (signal) {
+                        signal.addEventListener('abort', () => {
+                            clearTimeout(timeout);
+                            reject(new DOMException('Aborted', 'AbortError'));
+                        }, { once: true });
+                    }
+                });
                 continue;
             }
             throw err; // Final attempt failed or non-retryable error
@@ -4137,24 +4267,47 @@ function stop_indexing() {
     if (!INDEXING_ACTIVE) return;
     
     INDEXING_STOPPED = true;
+    
+    // Abort any in-progress async operations
+    if (INDEXING_ABORT_CONTROLLER) {
+        INDEXING_ABORT_CONTROLLER.abort();
+        INDEXING_ABORT_CONTROLLER = null;
+    }
+    
+    // Update button to show stopping state
+    update_indexing_button_state('stopping');
+    
     debug_qdrant('Indexing stop requested by user');
     toastr.warning('Stopping indexing...', MODULE_NAME_FANCY);
 }
 
 // Transform indexing button to active/inactive state
-function update_indexing_button_state(isActive) {
+function update_indexing_button_state(state) {
     const $button = $('#ct_index_chats');
     
-    if (isActive) {
+    // Support legacy boolean for backward compatibility
+    if (typeof state === 'boolean') {
+        state = state ? 'active' : 'inactive';
+    }
+    
+    if (state === 'active') {
         $button.addClass('ct_active');
         $button.find('i').removeClass('fa-database').addClass('fa-stop');
         $button.find('span').text('Stop');
         $button.attr('title', 'Stop the current indexing operation');
+    } else if (state === 'stopping') {
+        $button.addClass('ct_active');
+        $button.find('i').removeClass('fa-database fa-stop').addClass('fa-spinner fa-spin');
+        $button.find('span').text('Stopping...');
+        $button.attr('title', 'Aborting indexing operations...');
+        $button.prop('disabled', true);
     } else {
+        // inactive state
         $button.removeClass('ct_active');
-        $button.find('i').removeClass('fa-stop').addClass('fa-database');
+        $button.find('i').removeClass('fa-stop fa-spinner fa-spin').addClass('fa-database');
         $button.find('span').text('Index Chat');
         $button.attr('title', 'Index all messages from current chat');
+        $button.prop('disabled', false);
     }
 }
 
@@ -4479,7 +4632,7 @@ const chunkBuffer = new ConversationalChunkBuffer();
 const memoryBuffer = chunkBuffer;
 
 // Process and store a chunk to Qdrant (V10 enhanced)
-async function process_and_store_chunk(chunk) {
+async function process_and_store_chunk(chunk, signal = null) {
     if (!get_settings('qdrant_enabled')) {
         debug_qdrant('Qdrant disabled, skipping chunk storage');
         return;
@@ -4489,7 +4642,7 @@ async function process_and_store_chunk(chunk) {
     
     try {
         // Generate embedding for the chunk
-        const embedding = await generate_embedding(chunk.text);
+        const embedding = await generate_embedding(chunk.text, signal);
         
         if (!embedding || embedding.length === 0) {
             throw new Error('Failed to generate embedding');
@@ -5677,6 +5830,10 @@ async function index_current_chat() {
     // Set indexing state
     INDEXING_ACTIVE = true;
     INDEXING_STOPPED = false;
+    
+    // Create abort controller for this indexing session
+    INDEXING_ABORT_CONTROLLER = new AbortController();
+    
     update_indexing_button_state(true);
     
     toastr.info('Indexing current chat...', MODULE_NAME_FANCY);
@@ -5736,9 +5893,14 @@ async function index_current_chat() {
         }
         
         try {
-            await process_and_store_chunk(chunk);
+            await process_and_store_chunk(chunk, INDEXING_ABORT_CONTROLLER?.signal);
             stored++;
         } catch (e) {
+            // Check for abort
+            if (e.name === 'AbortError') {
+                debug_qdrant('Chunk processing aborted');
+                break;
+            }
             error(`Failed to store chunk:`, e);
         }
     }
@@ -5747,6 +5909,10 @@ async function index_current_chat() {
     const wasStopped = INDEXING_STOPPED;
     INDEXING_ACTIVE = false;
     INDEXING_STOPPED = false;
+    
+    // Cleanup abort controller
+    INDEXING_ABORT_CONTROLLER = null;
+    
     update_indexing_button_state(false);
     
     if (wasStopped) {

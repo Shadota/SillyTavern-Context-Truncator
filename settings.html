@@ -365,6 +365,59 @@
                     </div>
                 </div>
 
+                <!-- New summarization request controls: timeout, delay, retries -->
+                <div class="ct_compact_setting">
+                    <div class="ct_setting_header">
+                        <span class="ct_setting_label">
+                            Request Timeout (s)
+                            <span class="ct_tooltip">
+                                <i class="fa-solid fa-circle-info ct_info_icon"></i>
+                                <span class="ct_tooltip_text">Maximum time to wait for the summary endpoint (seconds).</span>
+                            </span>
+                        </span>
+                        <span id="ct_summary_timeout_display" class="ct_setting_value">15s</span>
+                    </div>
+                    <div class="ct_slider_wrapper">
+                        <input id="ct_summary_timeout" type="range" min="5000" max="60000" step="1000" value="15000" />
+                    </div>
+                </div>
+
+                <div class="ct_compact_setting">
+                    <div class="ct_setting_header">
+                        <span class="ct_setting_label">
+                            Request Delay (ms)
+                            <span class="ct_tooltip">
+                                <i class="fa-solid fa-circle-info ct_info_icon"></i>
+                                <span class="ct_tooltip_text">Delay between consecutive summary requests to avoid endpoint overload.</span>
+                            </span>
+                        </span>
+                        <span id="ct_summary_delay_display" class="ct_setting_value">500ms</span>
+                    </div>
+                    <div class="ct_slider_wrapper">
+                        <input id="ct_summary_delay" type="range" min="100" max="2000" step="100" value="500" />
+                    </div>
+                </div>
+
+                <div class="ct_compact_setting">
+                                <div class="ct_setting_header">
+                                    <span class="ct_setting_label">
+                                        Max Retries
+                                        <span class="ct_tooltip">
+                                            <i class="fa-solid fa-circle-info ct_info_icon"></i>
+                                            <span class="ct_tooltip_text">Maximum retry attempts for transient errors (503/timeout).</span>
+                                        </span>
+                                    </span>
+                                    <span class="ct_setting_value">
+                                        <select id="ct_summary_retries">
+                                            <option value="1">1</option>
+                                            <option value="2">2</option>
+                                            <option value="3" selected>3</option>
+                                            <option value="5">5</option>
+                                        </select>
+                                    </span>
+                                </div>
+                            </div>
+
                 <hr class="ct_section_divider">
 
                 <!-- Target Settings -->

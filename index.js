@@ -52,6 +52,9 @@ const default_settings = {
     connection_profile: "",         // DEPRECATED: Connection profile dropdown removed — summarization uses independent summary_endpoint_url
     summary_endpoint_url: "",       // REQ-003: OpenAI-compatible summary endpoint URL (empty = use generateRaw)
     summary_max_words: 50,          // Maximum words per summary
+    summary_endpoint_timeout: 15000,  // Timeout in ms (increased from 10s)
+    summary_request_delay: 500,       // Delay between requests in ms
+    summary_max_retries: 3,           // Max retry attempts on transient errors
     summary_prompt: `Summarize the following roleplay message into a single, dense sentence.
 
 NAMES: {{user}} is the user's character. {{char}} is the AI character.
@@ -147,8 +150,7 @@ Recent chat always takes precedence over these notes.
     summary_enhanced_chunks: true,    // Include summaries in chunk text when available
 };
  
-// Default timeout for summary endpoint requests
-const SUMMARY_ENDPOINT_TIMEOUT_MS = 10000; // 10s
+// Timeout now uses get_settings('summary_endpoint_timeout') dynamically
 
 // Global state
 let TRUNCATION_INDEX = null;  // Current truncation position
@@ -2626,7 +2628,13 @@ class SummaryQueue {
     stop() {
         if (!this.active) return;
         
+        // Mark as stopped immediately to prevent new work from starting
         this.stopped = true;
+
+        // Skip any pending rate-limit delays in process loop
+        this._skipPendingDelay = true;
+
+        // Clear queued indexes so no further messages are processed
         this.queue = [];
         
         // Abort current generation if in progress
@@ -2636,7 +2644,7 @@ class SummaryQueue {
             debug('Aborted current summarization generation');
         }
         
-        // Show "Stopping..." state while cleanup completes
+        // Show "Stopping..." state while cleanup completes (synchronous update)
         this.updateButtonState('stopping');
         
         debug('Summarization queue stopped by user');
@@ -2674,6 +2682,8 @@ class SummaryQueue {
     
     async process() {
         this.active = true;
+        // Ensure any previous skip flag is cleared at the start of processing
+        this._skipPendingDelay = false;
         
         // Update stats at start of processing
         update_summary_stats_display();
@@ -2686,6 +2696,30 @@ class SummaryQueue {
             // Update stats display after each message
             update_summary_stats_display();
             update_overview_tab();
+
+            // Rate limiting between summary requests (cancellable by stop)
+            const delayMs = Number(get_settings('summary_request_delay')) || 0;
+            if (delayMs > 0 && !this.stopped) {
+                const start = Date.now();
+                await new Promise(resolve => {
+                    const checkInterval = 50; // poll interval
+                    const tick = () => {
+                        if (this.stopped || this._skipPendingDelay) {
+                            resolve();
+                            return;
+                        }
+                        const elapsed = Date.now() - start;
+                        if (elapsed >= delayMs) {
+                            resolve();
+                            return;
+                        }
+                        setTimeout(tick, checkInterval);
+                    };
+                    setTimeout(tick, checkInterval);
+                });
+                // Reset skip flag after a controlled delay cycle
+                this._skipPendingDelay = false;
+            }
         }
         
         this.active = false;
@@ -2703,74 +2737,90 @@ class SummaryQueue {
     clean_summary_output(text) {
         try {
             if (!text) return '';
-            
+
             let cleaned = text.trim();
-            
+
             // Remove complete <think>...</think> blocks first (including content)
             cleaned = cleaned.replace(/<think>[\s\S]*?<\/think>/gi, '').trim();
-            
+
             // Remove orphaned think tags and everything after them
             const orphanedThinkMatch = cleaned.match(/<\/?think>/i);
             if (orphanedThinkMatch) {
                 cleaned = cleaned.substring(0, orphanedThinkMatch.index).trim();
             }
-            
+
+            // Strip common markup tokens that may appear in model outputs
+            cleaned = cleaned.replace(/<\/?s>/gi, '');         // Remove <s> and </s>
+            cleaned = cleaned.replace(/\[\/?INST\]/gi, '');  // Remove [INST] and [/INST]
+
+            // Normalize excessive newlines and whitespace to single spaces
+            cleaned = cleaned.replace(/\r\n|\r|\n/g, ' ');
+            cleaned = cleaned.replace(/\s{2,}/g, ' ').trim();
+
+            // Remove lines that start with common prefixes like "Summary:" or "Output:"
+            cleaned = cleaned.split('\n').map(l => l.trim()).filter(l => {
+                const low = l.toLowerCase();
+                return !(low.startsWith('summary:') || low.startsWith('output:'));
+            }).join(' ');
+
             // Patterns that indicate reasoning/thinking content (truncate at these)
             const thinkingPatterns = [
-                /\n\s*Hmm,/i,                    // "Hmm," reasoning start
-                /\n\s*Let me/i,                  // "Let me" reasoning start
-                /\n\s*Looking at/i,              // "Looking at" reasoning
-                /\n\s*I need to/i,               // "I need to" reasoning
-                /\n\s*First,/i,                  // "First," step-by-step
-                /\n\s*The (user|message|speaker)/i,  // "The user/message/speaker" analysis
-                /\n\s*Breaking down/i,           // Analysis phrase
-                /\n\s*I'll/i,                    // "I'll" planning
-                /\n\s*I think/i,                 // "I think" reasoning
-                /\n\s*Now,/i,                    // "Now," step
-                /\n\s*For the/i,                 // "For the" analysis
-                /\n\s*This (captures|covers|summarizes)/i,  // Meta-commentary
-                /\n\s*Perfect!/i,                // Self-congratulation
-                /\n\s*That's/i,                  // Self-evaluation
-                /\n\s*\(\d+\s*words?\)/i,        // Word count markers like "(45 words)"
-                /\n\s*I've/i,                    // "I've" reasoning
-                /\n\s*Analyzing/i,               // Analysis marker
-                /\n\s*The key/i,                 // "The key" analysis
+                /\bHmm,?/i,
+                /\bLet me\b/i,
+                /\bLooking at\b/i,
+                /\bI need to\b/i,
+                /\bFirst,\b/i,
+                /\bThe (user|message|speaker)\b/i,
+                /\bBreaking down\b/i,
+                /\bI'?ll\b/i,
+                /\bI think\b/i,
+                /\bNow,\b/i,
+                /\bFor the\b/i,
+                /\bThis (captures|covers|summarizes)\b/i,
+                /\bPerfect!\b/i,
+                /\bThat's\b/i,
+                /\(\d+\s*words?\)/i,
+                /\bI've\b/i,
+                /\bAnalyzing\b/i,
+                /\bThe key\b/i,
             ];
-            
+
             for (const pattern of thinkingPatterns) {
-                const match = cleaned.match(pattern);
-                if (match) {
-                    cleaned = cleaned.substring(0, match.index).trim();
+                const match = cleaned.search(pattern);
+                if (match !== -1) {
+                    cleaned = cleaned.substring(0, match).trim();
                 }
             }
-            
-            // Remove word count annotations like "(45 words)" anywhere in text
-            cleaned = cleaned.replace(/\s*\(\d+\s*words?\)\s*/gi, '').trim();
-            
-            // Split on double newlines and take first meaningful paragraph
-            const paragraphs = cleaned.split(/\n\n+/);
-            for (const para of paragraphs) {
-                const trimmedPara = para.trim();
-                // Skip empty paragraphs and those that look like meta-content
-                if (trimmedPara && trimmedPara.length > 10 &&
-                    !trimmedPara.toLowerCase().startsWith('hmm') &&
-                    !trimmedPara.toLowerCase().startsWith('let me') &&
-                    !trimmedPara.toLowerCase().startsWith('i need')) {
-                    cleaned = trimmedPara;
-                    break;
+
+            // Remove any remaining word count annotations like "(45 words)"
+            cleaned = cleaned.replace(/\(\s*\d+\s*words?\s*\)/gi, '').trim();
+
+            // If multiple sentences remain, pick the first sentence-like fragment
+            const sentenceEnd = /([.!?])\s+/;
+            let firstChunk = cleaned;
+            if (cleaned.length > 0) {
+                const parts = cleaned.split(sentenceEnd);
+                if (parts && parts.length > 0) {
+                    firstChunk = parts[0];
                 }
             }
-            
-            // Take only the first line if multiple lines remain (summary should be one sentence)
-            const firstLine = cleaned.split('\n')[0].trim();
-            if (firstLine && firstLine.length > 10) {
-                cleaned = firstLine;
+
+            // Final cleanup: remove surrounding quotes and trim
+            firstChunk = firstChunk.replace(/^['\"]|['\"]$/g, '').trim();
+
+            // Enforce maximum length (300 chars) and try to trim to end of sentence
+            if (firstChunk.length > 300) {
+                let truncated = firstChunk.substring(0, 300);
+                try {
+                    truncated = trimToEndSentence(truncated);
+                } catch (e) {
+                    // If trimToEndSentence fails, fallback to simple truncation
+                    truncated = truncated.trim();
+                }
+                firstChunk = truncated;
             }
-            
-            // Remove any leading/trailing quotes that might have been added
-            cleaned = cleaned.replace(/^["']|["']$/g, '').trim();
-            
-            return cleaned;
+
+            return firstChunk;
         } catch (e) {
             console.error(`[${MODULE_NAME_FANCY}] clean_summary_output error:`, e);
             try { toastr.error(`Summary cleaning failed: ${e.message || String(e)}`, MODULE_NAME_FANCY); } catch (t) { }
@@ -2808,14 +2858,14 @@ class SummaryQueue {
             }
 
             // Build the context block with clear labeling
-            const contextBlock = `[PREVIOUS CONTEXT - For reference only, DO NOT summarize this section]
-    The following summary is from the preceding message to help you understand references and pronouns.
-    
-    Previous Summary: ${prevSummary}
-    
-    [/PREVIOUS CONTEXT]
-    
-    `;
+            const contextBlock = `[PREVIOUS MESSAGE CONTEXT - Reference Only]
+            DO NOT include this section in your summary. This is background context only.
+            
+            Previous message summary: ${prevSummary}
+            
+            [END CONTEXT - Now summarize the message below]
+            
+            `;
 
             debug(`Added context from message ${prevIndex}: "${prevSummary.substring(0, 50)}..."`);
             return contextBlock;
@@ -2881,66 +2931,16 @@ class SummaryQueue {
             try {
                 // Create new AbortController for this generation
                 this.abortController = new AbortController();
-                
+
                 debug(`Generating summary for message ${index}`);
                 debug_trunc(`[${MODULE_NAME_FANCY}] Using ${get_settings('summary_endpoint_url') ? 'summary endpoint' : 'generateRaw'} for message ${index}`);
-                
+
                 // Prefer external summary endpoint when configured (REQ-003)
                 let result = null;
                 try {
                     if (get_settings('summary_endpoint_url')) {
-                        // Defensive: retry once on timeout or empty response
-                        let attempts = 0;
-                        while (attempts < 2) {
-                            try {
-                                result = await call_summary_endpoint(prompt);
-                                // If endpoint returned an empty string, retry once
-                                if (typeof result === 'string' && result.toString().trim().length === 0) {
-                                    if (attempts === 0) {
-                                        debug_trunc(`Summary endpoint returned empty for message ${index}, retrying once`);
-                                        attempts++;
-                                        continue;
-                                    } else {
-                                        debug_trunc(`[${MODULE_NAME_FANCY}] Summarization empty response for message ${index}`);
-                                        set_data(message, 'error', 'Empty response from summary endpoint');
-                                        try { toastr.error(`Summarization returned empty for message ${index}`, MODULE_NAME_FANCY); } catch (t) {}
-                                        this.abortController = null;
-                                        return;
-                                    }
-                                }
-                                // Non-empty result -> break retry loop
-                                break;
-                            } catch (callErr) {
-                                // If timed out, retry once
-                                if (callErr && callErr.message && callErr.message.includes('Connection timed out')) {
-                                    if (attempts === 0) {
-                                        debug_trunc(`Summary endpoint timed out for message ${index}, retrying once`);
-                                        attempts++;
-                                        continue; // retry
-                                    } else {
-                                        debug_trunc(`[${MODULE_NAME_FANCY}] Summarization timed out for message ${index}: ${callErr}`);
-                                        set_data(message, 'error', 'Connection timed out (10s)');
-                                        try { toastr.error(`Summarization timed out for message ${index}`, MODULE_NAME_FANCY); } catch (t) {}
-                                        this.abortController = null;
-                                        return;
-                                    }
-                                }
-                                // Network/CORS errors are surfaced as TypeError -> map to friendly message
-                                if (callErr && callErr.message && callErr.message.startsWith('Network/CORS error')) {
-                                    debug_trunc(`[${MODULE_NAME_FANCY}] Summarization network/CORS error for message ${index}: ${callErr.message}`);
-                                    set_data(message, 'error', String(callErr.message));
-                                    try { toastr.error(`Summarization network/CORS error for message ${index}: ${callErr.message}`, MODULE_NAME_FANCY); } catch (t) {}
-                                    this.abortController = null;
-                                    return;
-                                }
-                                // Other errors - record and surface
-                                debug_trunc(`[${MODULE_NAME_FANCY}] Summarization call failed for message ${index}: ${callErr}`);
-                                set_data(message, 'error', String(callErr));
-                                try { toastr.error(`Summarization generation failed for message ${index}: ${callErr.message || String(callErr)}`, MODULE_NAME_FANCY); } catch (t) {}
-                                this.abortController = null;
-                                return;
-                            }
-                        }
+                        // Delegate retry/backoff to call_summary_endpoint which implements exponential backoff + retries
+                        result = await call_summary_endpoint(prompt, { signal: this.abortController.signal });
                     } else {
                         result = await generateRaw({
                             prompt: prompt,
@@ -2948,53 +2948,51 @@ class SummaryQueue {
                             // but we check this.stopped before and after the call
                         });
                     }
-                } catch (e) {
-                    // Surface unexpected generation/errors to the user and record on the message
-                    console.error(`[${MODULE_NAME_FANCY}]`, `Summarization generation failed for message ${index}:`, e);
-                    set_data(message, 'error', String(e));
-                    try {
-                        toastr.error(`Summarization generation failed for message ${index}: ${e.message || String(e)}`, MODULE_NAME_FANCY);
-                    } catch (toastErr) {
-                        console.error(`[${MODULE_NAME_FANCY}] toastr error:`, toastErr);
-                    }
+                } catch (callErr) {
+                    // If the call was aborted by the user, treat as a non-error and exit quietly
+                    const wasAborted = this.stopped || (this.abortController && this.abortController.signal && this.abortController.signal.aborted) || (callErr && (callErr.name === 'AbortError' || (callErr.message && callErr.message.toLowerCase().includes('abort')) || (callErr.message && callErr.message.toLowerCase().includes('request aborted'))));
+
                     this.abortController = null;
+
+                    if (wasAborted) {
+                        debug(`Summarization aborted/stopped for message ${index}`);
+                        return; // Don't mark message as error when user aborted
+                    }
+
+                    // Non-abort errors should be recorded on the message and surfaced
+                    console.error(`[${MODULE_NAME_FANCY}] Summarization generation failed for message ${index}:`, callErr);
+                    set_data(message, 'error', String(callErr));
+                    try { toastr.error(`Summarization generation failed for message ${index}: ${callErr.message || String(callErr)}`, MODULE_NAME_FANCY); } catch (t) {}
                     return;
                 }
-                
+
                 // Check if stopped during generation
                 if (this.stopped) {
                     debug(`Summarization stopped during generation of message ${index}`);
                     this.abortController = null;
                     return;
                 }
-                
-                // Duplicate stop-check retained for safety
-                if (this.stopped) {
-                    debug(`Summarization stopped during generation of message ${index}`);
-                    this.abortController = null;
-                    return;
-                }
-                
+
                 this.abortController = null;
-                
+
                 if (result) {
                     // Normalize result to a string (handles both fetch text and structured objects)
                     const raw = (typeof result === 'string') ? result : (result?.toString?.() || '');
                     let rawSummary = raw;
-                    
+
                     // Clean the output - remove any thinking content that might have snuck through
                     let summary = this.clean_summary_output(rawSummary);
-                    
+
                     // If cleaning removed the speaker label, add it back
                     if (!summary.includes(':')) {
                         summary = speakerLabel + ' ' + summary;
                     }
-                    
+
                     // Trim incomplete sentences if enabled
                     if (ctx.powerUserSettings?.trim_sentences) {
                         summary = trimToEndSentence(summary);
                     }
-                    
+
                     // Validate the summary looks reasonable
                     if (summary.length < 10) {
                         debug(`Warning: Summary too short (${summary.length}), may need review`);
@@ -3004,30 +3002,23 @@ class SummaryQueue {
                         summary = summary.substring(0, 300);
                         summary = trimToEndSentence(summary);
                     }
-                    
+
                     // Store summary
                     set_data(message, 'memory', summary);
                     set_data(message, 'needs_summary', false);
                     set_data(message, 'hash', getStringHash(message.mes));
-                    
+
                     debug(`Summarized message ${index}: "${summary}"`);
                 }
             } catch (e) {
-                // Don't treat AbortError as a failure to surface
-                if (e && e.name === 'AbortError') {
-                    debug(`Summarization aborted for message ${index}`);
-                } else if (this.stopped) {
-                    debug(`Summarization stopped by user for message ${index}`);
+                // Any unexpected errors here should be surfaced and recorded
+                const aborted = this.stopped || (this.abortController && this.abortController.signal && this.abortController.signal.aborted) || (e && (e.name === 'AbortError' || (e.message && e.message.toLowerCase().includes('abort'))));
+                if (aborted) {
+                    debug(`Summarization aborted/stopped for message ${index}`);
                 } else {
-                    // Surface unexpected errors to the user and record on the message
                     console.error(`[${MODULE_NAME_FANCY}]`, `Failed to summarize message ${index}:`, e);
                     set_data(message, 'error', String(e));
-                    try {
-                        toastr.error(`Summarization failed for message ${index}: ${e.message || String(e)}`, MODULE_NAME_FANCY);
-                    } catch (toastErr) {
-                        // If toastr fails for some reason, at least log it
-                        console.error(`[${MODULE_NAME_FANCY}] toastr error:`, toastErr);
-                    }
+                    try { toastr.error(`Summarization failed for message ${index}: ${e.message || String(e)}`, MODULE_NAME_FANCY); } catch (toastErr) { console.error(`[${MODULE_NAME_FANCY}] toastr error:`, toastErr); }
                 }
 
                 this.abortController = null;
@@ -3247,6 +3238,9 @@ function initialize_ui_listeners() {
     bind_setting('#ct_auto_summarize', 'auto_summarize', 'boolean');
     bind_setting('#ct_summary_endpoint_url', 'summary_endpoint_url', 'text');
     bind_setting('#ct_summary_endpoint_api_key', 'summary_endpoint_api_key', 'text');
+    bind_range_setting('#ct_summary_timeout', 'summary_endpoint_timeout', '#ct_summary_timeout_display');
+    bind_range_setting('#ct_summary_delay', 'summary_request_delay', '#ct_summary_delay_display');
+    bind_setting('#ct_summary_retries', 'summary_max_retries', 'number');
 
     // Per-module debug settings
     bind_setting('#ct_debug_truncation', 'debug_truncation', 'boolean');
@@ -3827,9 +3821,12 @@ function extract_model_content(data) {
     return (data?.choices && data.choices[0]) ? (data.choices[0].message?.content || data.choices[0].text) : (data?.text || '');
 }
 
-async function call_summary_endpoint(prompt) {
+async function call_summary_endpoint(prompt, options = {}) {
+    const { signal = null, attempt = 0 } = options;
     const url = get_settings('summary_endpoint_url');
     const apiKey = get_settings('summary_endpoint_api_key');
+    const timeout = get_settings('summary_endpoint_timeout') || 15000;
+    const maxRetries = get_settings('summary_max_retries') || 3;
 
     if (!url) throw new Error('No summary endpoint configured');
 
@@ -3837,7 +3834,12 @@ async function call_summary_endpoint(prompt) {
     try { parsed = new URL(url); } catch (e) { throw new Error('Invalid summary endpoint URL'); }
 
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 10000);
+    const timeoutId = setTimeout(() => controller.abort(), timeout);
+    
+    // Link external signal to our controller
+    if (signal) {
+        signal.addEventListener('abort', () => controller.abort());
+    }
 
     const headers = { 'Content-Type': 'application/json' };
     if (apiKey) headers['Authorization'] = `Bearer ${apiKey}`;
@@ -3857,7 +3859,26 @@ async function call_summary_endpoint(prompt) {
             signal: controller.signal
         });
 
-        clearTimeout(timeout);
+        clearTimeout(timeoutId);
+
+        // Handle retryable errors
+        if (resp.status === 503 || resp.status === 429) {
+            if (attempt < maxRetries) {
+                const backoffMs = Math.pow(2, attempt) * 1000 + Math.random() * 500;
+                debug_trunc(`HTTP ${resp.status}, retry ${attempt + 1}/${maxRetries} after ${Math.round(backoffMs)}ms`);
+                
+                await new Promise(resolve => setTimeout(resolve, backoffMs));
+                
+                // Check if aborted during backoff
+                if (signal?.aborted) {
+                    throw new Error('Aborted during retry backoff');
+                }
+                
+                return call_summary_endpoint(prompt, { signal, attempt: attempt + 1 });
+            }
+            const text = await resp.text();
+            throw new Error(`HTTP ${resp.status} after ${maxRetries} retries: ${text}`);
+        }
 
         if (!resp.ok) {
             const text = await resp.text();
@@ -3865,13 +3886,34 @@ async function call_summary_endpoint(prompt) {
         }
 
         let data;
-        try { data = await resp.json(); } catch (e) { const txt = await resp.text(); return txt; }
+        try { data = await resp.json(); } catch (e) {
+            const txt = await resp.text();
+            return txt;
+        }
 
         const content = extract_model_content(data);
-        return content ?? '';
+        
+        // Retry on empty response
+        if (!content || content.trim().length === 0) {
+            if (attempt < maxRetries) {
+                const backoffMs = Math.pow(2, attempt) * 1000 + Math.random() * 500;
+                debug_trunc(`Empty response, retry ${attempt + 1}/${maxRetries} after ${Math.round(backoffMs)}ms`);
+                await new Promise(resolve => setTimeout(resolve, backoffMs));
+                if (signal?.aborted) throw new Error('Aborted during retry backoff');
+                return call_summary_endpoint(prompt, { signal, attempt: attempt + 1 });
+            }
+            throw new Error('Empty response after max retries');
+        }
+        
+        return content;
+        
     } catch (e) {
-        clearTimeout(timeout);
-        if (e.name === 'AbortError') throw new Error('Connection timed out (10s)');
+        clearTimeout(timeoutId);
+        
+        if (e.name === 'AbortError') {
+            if (signal?.aborted) throw new Error('Request aborted by user');
+            throw new Error(`Connection timed out (${timeout/1000}s)`);
+        }
         if (e instanceof TypeError) throw new Error(`Network/CORS error: ${e.message}`);
         throw e;
     }

@@ -542,14 +542,24 @@ function load_truncation_index() {
         QDRANT_TOKEN_HISTORY = chat_metadata[MODULE_NAME].qdrant_token_history || [];
         debug(`Loaded calibration state: ${CALIBRATION_STATE}, stable: ${STABLE_COUNT}/${STABLE_THRESHOLD}`);
     } else {
-        // Reset to defaults for new chats without saved state
-        CALIBRATION_STATE = 'WAITING';
-        GENERATION_COUNT = 0;
-        STABLE_COUNT = 0;
+        // V32 FIX: If correction_factor was loaded but calibration_state wasn't,
+        // this is an older chat that learned a factor before state was persisted.
+        // Set to CALIBRATING instead of WAITING to preserve the learned factor.
+        const hasLearnedFactor = CHAT_TOKEN_CORRECTION_FACTOR !== 1.0;
+        if (hasLearnedFactor) {
+            CALIBRATION_STATE = 'CALIBRATING';
+            GENERATION_COUNT = 0;
+            STABLE_COUNT = 3;  // Assume some stability since factor was learned
+            debug(`No calibration state but has learned factor (${CHAT_TOKEN_CORRECTION_FACTOR.toFixed(3)}), starting in CALIBRATING`);
+        } else {
+            CALIBRATION_STATE = 'WAITING';
+            GENERATION_COUNT = 0;
+            STABLE_COUNT = 0;
+            debug(`No calibration state found, reset to WAITING`);
+        }
         RETRAIN_COUNT = 0;
         DELETION_COUNT = 0;
         QDRANT_TOKEN_HISTORY = [];
-        debug(`No calibration state found, reset to WAITING`);
     }
 }
 
@@ -910,11 +920,14 @@ function calculate_truncation_index() {
             debug_trunc(`  Chat segments found: ${segments.length}`);
         }
         
-        nonChatBudget = Math.max(totalPromptTokens - promptChatTokens, 0);
+        // V32 FIX: Apply correction factor to non-chat budget too
+        // The tokenizer overestimates ALL tokens, not just chat
+        const rawNonChatBudget = Math.max(totalPromptTokens - promptChatTokens, 0);
+        nonChatBudget = Math.floor(rawNonChatBudget * CHAT_TOKEN_CORRECTION_FACTOR);
         
         debug_trunc(`  Raw prompt size: ${totalPromptTokens} tokens`);
         debug_trunc(`  Chat tokens (from segments): ${promptChatTokens} tokens`);
-        debug_trunc(`  Non-chat budget: ${nonChatBudget} tokens`);
+        debug_trunc(`  Non-chat budget: ${nonChatBudget} tokens (raw: ${rawNonChatBudget}, factor: ${CHAT_TOKEN_CORRECTION_FACTOR.toFixed(3)})`);
     }
     
     // Track token map usage
@@ -1939,10 +1952,10 @@ function update_overview_tab() {
             $('#ct_gauge_value').text(`${LAST_VALID_UTILIZATION.toFixed(1)}%`);
             $('#ct_gauge_max').text(`of ${LAST_VALID_MAX_CONTEXT.toLocaleString()} tokens`);
         } else {
-            // Show placeholder
+            // V32: Show clear "waiting" state instead of confusing zeros
             $('#ct_gauge_fill').css('width', '0%');
-            $('#ct_gauge_value').text('--%');
-            $('#ct_gauge_max').text(`of ${maxContext.toLocaleString()} tokens`);
+            $('#ct_gauge_value').text('--');
+            $('#ct_gauge_max').text(`Waiting for first generation`);
         }
     }
 

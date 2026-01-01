@@ -1721,7 +1721,18 @@ function calibrate_target_size(actualSize) {
     // V33 FIX: Calculate deviation against calibrated target, not utilization
     // Question: "Is actual prompt close to our target_context_size?"
     // NOT: "Is actualSize/maxContext close to targetUtilization?"
-    const calibratedTarget = get_settings('target_context_size');
+    let calibratedTarget = get_settings('target_context_size');
+    
+    // V32 FIX: Apply same Qdrant adjustment used in calculate_truncation_index()
+    // Without this, calibration compares against 56422 while truncation uses 51694
+    if (get_settings('qdrant_enabled') && get_settings('account_qdrant_tokens')) {
+        const qdrantAvg = get_averaged_qdrant_tokens();
+        if (qdrantAvg > 0) {
+            calibratedTarget = calibratedTarget - qdrantAvg;
+            debug_trunc(`  Qdrant-adjusted calibration target: ${calibratedTarget} tokens`);
+        }
+    }
+    
     const deviation = Math.abs((actualSize - calibratedTarget) / calibratedTarget);
     
     // Keep utilization for display/logging purposes

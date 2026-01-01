@@ -472,6 +472,26 @@ function get_prompt_chat_segments_from_raw(raw_prompt) {
         });
     }
     
+    // V33 DIAGNOSTIC: Log segment summary
+    if (get_settings('debug_truncation')) {
+        debug_trunc('  === SEGMENT SUMMARY ===');
+        debug_trunc(`  Total segments: ${segments.length}`);
+        const showCount = Math.min(5, segments.length);
+        for (let i = 0; i < showCount; i++) {
+            debug_trunc(`    [${i}] role=${segments[i].role}, tokens=${segments[i].tokenCount}`);
+        }
+        if (segments.length > 10) {
+            debug_trunc(`    ... (${segments.length - 10} more) ...`);
+            for (let i = Math.max(showCount, segments.length - 5); i < segments.length; i++) {
+                debug_trunc(`    [${i}] role=${segments[i].role}, tokens=${segments[i].tokenCount}`);
+            }
+        } else if (segments.length > showCount) {
+            for (let i = showCount; i < segments.length; i++) {
+                debug_trunc(`    [${i}] role=${segments[i].role}, tokens=${segments[i].tokenCount}`);
+            }
+        }
+    }
+    
     return segments;
 }
 
@@ -492,6 +512,28 @@ function get_prompt_message_tokens_from_raw(raw_prompt, chat) {
     // After truncation, only the LAST N messages are in the prompt, not all messages
     const startIndex = TRUNCATION_INDEX || 0;
     
+    // V33 DIAGNOSTIC: Log starting conditions
+    debug_trunc('  === TOKEN MAP BUILDING ===');
+    debug_trunc(`  Segments available: ${segments.length}`);
+    debug_trunc(`  Chat length: ${chat.length}`);
+    debug_trunc(`  TRUNCATION_INDEX (startIndex): ${startIndex}`);
+    debug_trunc(`  Messages to match: ${chat.length - startIndex}`);
+    
+    // Log first few chat messages for verification
+    debug_trunc('  First 3 chat messages (from startIndex):');
+    for (let dbgI = startIndex; dbgI < Math.min(startIndex + 3, chat.length); dbgI++) {
+        const m = chat[dbgI];
+        if (m) {
+            debug_trunc(`    Chat[${dbgI}]: is_system=${m.is_system}, is_user=${m.is_user}, expected=${m.is_user ? 'user' : 'assistant'}`);
+        }
+    }
+    
+    // Log first few segments for verification
+    debug_trunc('  First 3 segments:');
+    for (let dbgI = 0; dbgI < Math.min(3, segments.length); dbgI++) {
+        debug_trunc(`    Segment[${dbgI}]: role=${segments[dbgI].role}, tokens=${segments[dbgI].tokenCount}`);
+    }
+    
     // Match segments to chat messages
     for (let i = startIndex; i < chat.length && segment_index < segments.length; i++) {
         let message = chat[i];
@@ -503,15 +545,28 @@ function get_prompt_message_tokens_from_raw(raw_prompt, chat) {
         
         let expected_role = message.is_user ? 'user' : 'assistant';
         
-        // Find next matching segment
+        // V33 DIAGNOSTIC: Log matching attempt
+        const segRole = segment_index < segments.length ? segments[segment_index].role : 'EOF';
+        debug_trunc(`  [${i - startIndex}] Chat[${i}] expects '${expected_role}', Segment[${segment_index}] is '${segRole}'`);
+        
+        // Find next matching segment (with diagnostic logging)
+        let skipped = 0;
         while (segment_index < segments.length && segments[segment_index].role !== expected_role) {
+            debug_trunc(`    SKIP Segment[${segment_index}] role='${segments[segment_index].role}' (want '${expected_role}')`);
             segment_index += 1;
+            skipped++;
+            if (skipped > segments.length) {
+                debug_trunc(`    ERROR: Skipped entire segment array without finding '${expected_role}'`);
+                break;
+            }
         }
         
         if (segment_index >= segments.length) {
+            debug_trunc(`    STOP: Ran out of segments at segment_index=${segment_index}`);
             break;
         }
         
+        debug_trunc(`    MATCH: Chat[${i}] → Segment[${segment_index}] = ${segments[segment_index].tokenCount} tokens`);
         map.set(i, segments[segment_index].tokenCount);
         segment_index += 1;
     }
@@ -1174,6 +1229,22 @@ function calculate_truncation_index() {
     debug_trunc(`  `);
     debug_trunc(`  === MESSAGE TOKEN MAP ===`);
     debug_trunc(`  Map stats: ${map_hits} hits, ${map_misses} misses (${message_token_map ? message_token_map.size : 0} entries)`);
+    
+    // V33 DIAGNOSTIC: Show map entries if available
+    if (message_token_map && message_token_map.size > 0) {
+        debug_trunc(`  Map entries (first 10):`);
+        let count = 0;
+        for (const [idx, tokens] of message_token_map.entries()) {
+            if (count >= 10) {
+                debug_trunc(`    ... and ${message_token_map.size - 10} more`);
+                break;
+            }
+            debug_trunc(`    Chat[${idx}] = ${tokens} tokens`);
+            count++;
+        }
+    } else {
+        debug_trunc(`  WARNING: Token map is empty!`);
+    }
     
     debug_trunc(`  `);
     debug_trunc(`  === FINAL RESULT ===`);

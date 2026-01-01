@@ -534,6 +534,27 @@ function get_prompt_message_tokens_from_raw(raw_prompt, chat) {
         debug_trunc(`    Segment[${dbgI}]: role=${segments[dbgI].role}, tokens=${segments[dbgI].tokenCount}`);
     }
     
+    // Check if all segments are the same role (completion/roleplay mode)
+    const allSameRole = segments.length > 0 && segments.every(s => s.role === segments[0].role);
+    if (allSameRole && segments.length > 1) {
+        debug_trunc(`  Detected completion mode: all ${segments.length} segments are '${segments[0].role}'`);
+        debug_trunc(`  Using sequential mapping instead of role matching`);
+        
+        // Sequential mapping: map segments to non-system chat messages in order
+        let segmentIdx = 0;
+        for (let chatIdx = startIndex; chatIdx < chat.length && segmentIdx < segments.length; chatIdx++) {
+            const msg = chat[chatIdx];
+            if (msg.is_system) continue; // Skip system messages
+            
+            map.set(chatIdx, segments[segmentIdx].tokenCount);
+            debug_trunc(`    Map[${chatIdx}] = ${segments[segmentIdx].tokenCount} tokens (sequential)`);
+            segmentIdx++;
+        }
+        
+        debug_trunc(`  Sequential mapping complete: ${map.size} entries`);
+        return map;
+    }
+    
     // Match segments to chat messages
     for (let i = startIndex; i < chat.length && segment_index < segments.length; i++) {
         let message = chat[i];
@@ -1031,14 +1052,15 @@ function calculate_truncation_index() {
             const lagging = i < startIndex;
             if (!lagging) {
                 // Kept message - use full token count
-                const rawEstimate = estimateMessagePromptTokens(message, i);
-                // V35 FIX: Only apply correction factor to ESTIMATED tokens (map misses)
-                // Map hits are actual measured tokens and should not be corrected
-                const isFromMap = message_token_map && message_token_map.has(i);
-                if (isFromMap) {
-                    total += rawEstimate;  // Actual measured value, no correction
+                // V32 FIX: Token map values are already accurate from prompt parsing
+                // Only apply correction factor to fallback estimates (map misses)
+                const mapValue = message_token_map ? message_token_map.get(i) : undefined;
+                if (mapValue !== undefined) {
+                    total += mapValue;  // Token map values are already accurate
                 } else {
-                    total += Math.floor(rawEstimate * CHAT_TOKEN_CORRECTION_FACTOR);  // Estimated, needs correction
+                    // Fall back to estimation with correction factor
+                    const rawEstimate = estimateMessagePromptTokens(message, i);
+                    total += Math.floor(rawEstimate * CHAT_TOKEN_CORRECTION_FACTOR);
                 }
                 continue;
             }
@@ -1570,22 +1592,24 @@ function update_status_display() {
         const newCorrectionFactor = actualChatTokens / LAST_PREDICTED_CHAT_SIZE_RAW;
         const oldCorrectionFactor = CHAT_TOKEN_CORRECTION_FACTOR;
         
-        // Fix 2.1: Adaptive EMA alpha based on error magnitude
-        // Smaller errors = smaller alpha (more stable), larger errors = larger alpha (faster correction)
-        const errorMagnitude = Math.abs(newCorrectionFactor - oldCorrectionFactor);
-        const baseAlpha = 0.35;  // Increased from 0.25 for faster convergence (V22)
-        const maxAlpha = 0.6;    // Increased from 0.4 - Maximum alpha for large errors (V22)
-        const adaptiveAlpha = Math.min(baseAlpha + (errorMagnitude * 0.5), maxAlpha);
+        // V32 FIX: Adaptive smoothing weight based on prediction error
+        // Faster convergence when error is large (>20%), more stable when error is small
+        const predictedChat = LAST_PREDICTED_CHAT_SIZE;
+        const errorPercent = Math.abs(predictedChat - actualChatTokens) / actualChatTokens;
+        const newWeight = errorPercent > 0.20 ? 0.60 : 0.40; // Faster convergence for large errors
         
-        // Smooth the correction factor using adaptive EMA
-        CHAT_TOKEN_CORRECTION_FACTOR = (adaptiveAlpha * newCorrectionFactor) + ((1 - adaptiveAlpha) * CHAT_TOKEN_CORRECTION_FACTOR);
+        // Smooth the correction factor using adaptive weight
+        CHAT_TOKEN_CORRECTION_FACTOR = (newWeight * newCorrectionFactor) + ((1 - newWeight) * oldCorrectionFactor);
+        
+        debug_trunc(`  Smoothing weight: ${newWeight} (error: ${(errorPercent * 100).toFixed(1)}%)`);
         
         // V32 FIX: Clamp correction factor to prevent runaway deviation
-        // Bounds prevent the factor from collapsing to extreme values (e.g., 0.5-0.6)
-        // which would cause massive over-truncation
-        const MIN_CORRECTION_FACTOR = 0.7;
+        // Lower bound relaxed from 0.7 to 0.5 to handle edge cases
+        const MIN_CORRECTION_FACTOR = 0.5;
         const MAX_CORRECTION_FACTOR = 1.5;
         CHAT_TOKEN_CORRECTION_FACTOR = Math.max(MIN_CORRECTION_FACTOR, Math.min(MAX_CORRECTION_FACTOR, CHAT_TOKEN_CORRECTION_FACTOR));
+        
+        debug_trunc(`  Bounded factor: ${CHAT_TOKEN_CORRECTION_FACTOR.toFixed(3)} (min: ${MIN_CORRECTION_FACTOR}, max: ${MAX_CORRECTION_FACTOR})`);
         
         // Log correction factor updates
         debug_trunc(`═══════════════════════════════════════════════════════════════`);

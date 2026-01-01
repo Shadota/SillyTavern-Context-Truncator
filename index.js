@@ -488,8 +488,12 @@ function get_prompt_message_tokens_from_raw(raw_prompt, chat) {
     let map = new Map();
     let segment_index = 0;
     
+    // V32 FIX: Start from truncation index (first kept message) instead of 0
+    // After truncation, only the LAST N messages are in the prompt, not all messages
+    const startIndex = TRUNCATION_INDEX || 0;
+    
     // Match segments to chat messages
-    for (let i = 0; i < chat.length && segment_index < segments.length; i++) {
+    for (let i = startIndex; i < chat.length && segment_index < segments.length; i++) {
         let message = chat[i];
         
         // Skip system messages
@@ -512,7 +516,7 @@ function get_prompt_message_tokens_from_raw(raw_prompt, chat) {
         segment_index += 1;
     }
     
-    debug(`  get_prompt_message_tokens_from_raw: Built map with ${map.size} entries`);
+    debug(`  get_prompt_message_tokens_from_raw: Built map with ${map.size} entries (starting from index ${startIndex})`);
     return map;
 }
 
@@ -877,6 +881,13 @@ function calculate_truncation_index() {
     // Get the current truncation index (or start at 0)
     let currentIndex = TRUNCATION_INDEX || 0;
     let maxIndex = Math.max(chat.length - minKeep, 0);
+    
+    // V32 FIX: Also limit to keeping at least 10% of messages (never truncate more than 90%)
+    // This prevents pathological cases where correction factor collapse causes massive over-truncation
+    const percentageMinKeep = Math.floor(chat.length * 0.10);
+    maxIndex = Math.min(maxIndex, chat.length - percentageMinKeep);
+    debug_trunc(`  Max index (with 10% floor): ${maxIndex} (keeps at least ${percentageMinKeep} messages)`);
+    
     let nextIndex = Math.min(currentIndex, maxIndex);
     
     // Calculate separator size for summaries
@@ -1497,6 +1508,13 @@ function update_status_display() {
         
         // Smooth the correction factor using adaptive EMA
         CHAT_TOKEN_CORRECTION_FACTOR = (adaptiveAlpha * newCorrectionFactor) + ((1 - adaptiveAlpha) * CHAT_TOKEN_CORRECTION_FACTOR);
+        
+        // V32 FIX: Clamp correction factor to prevent runaway deviation
+        // Bounds prevent the factor from collapsing to extreme values (e.g., 0.5-0.6)
+        // which would cause massive over-truncation
+        const MIN_CORRECTION_FACTOR = 0.7;
+        const MAX_CORRECTION_FACTOR = 1.5;
+        CHAT_TOKEN_CORRECTION_FACTOR = Math.max(MIN_CORRECTION_FACTOR, Math.min(MAX_CORRECTION_FACTOR, CHAT_TOKEN_CORRECTION_FACTOR));
         
         // Log correction factor updates
         debug_trunc(`═══════════════════════════════════════════════════════════════`);

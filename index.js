@@ -804,16 +804,12 @@ function should_recalculate_truncation() {
         return true;
     }
     
-    // Recalculate if correction factor changed significantly (more than 5%)
-    const savedCorrectionFactor = chat_metadata?.[MODULE_NAME]?.correction_factor;
-    if (savedCorrectionFactor !== undefined) {
-        const factorChange = Math.abs(CHAT_TOKEN_CORRECTION_FACTOR - savedCorrectionFactor);
-        const percentChange = (factorChange / savedCorrectionFactor) * 100;
-        if (percentChange > 5) {
-            debug(`Correction factor changed by ${percentChange.toFixed(1)}% (${savedCorrectionFactor.toFixed(3)} → ${CHAT_TOKEN_CORRECTION_FACTOR.toFixed(3)}), forcing recalculation`);
-            return true;
-        }
-    }
+    // V35 FIX: Remove correction factor change detection here
+    // The factor is loaded in load_truncation_index() which is called before this,
+    // so comparing against the module-level variable is correct now.
+    // But we should NOT trigger recalculation just because factor changed -
+    // factor changes are continuous and expected during calibration.
+    // Only target size changes should force full recalculation.
     
     return false;
 }
@@ -923,14 +919,15 @@ function calculate_truncation_index() {
             debug_trunc(`  Chat segments found: ${segments.length}`);
         }
         
-        // V32 FIX: Apply correction factor to non-chat budget too
-        // The tokenizer overestimates ALL tokens, not just chat
+        // V35 FIX: Do NOT apply correction factor to non-chat budget
+        // Non-chat (system prompt, etc.) is measured directly from raw prompt and is accurate
+        // Only CHAT token estimates need correction (they're calculated, not measured)
         const rawNonChatBudget = Math.max(totalPromptTokens - promptChatTokens, 0);
-        nonChatBudget = Math.floor(rawNonChatBudget * CHAT_TOKEN_CORRECTION_FACTOR);
+        nonChatBudget = rawNonChatBudget;  // Use raw value directly
         
         debug_trunc(`  Raw prompt size: ${totalPromptTokens} tokens`);
         debug_trunc(`  Chat tokens (from segments): ${promptChatTokens} tokens`);
-        debug_trunc(`  Non-chat budget: ${nonChatBudget} tokens (raw: ${rawNonChatBudget}, factor: ${CHAT_TOKEN_CORRECTION_FACTOR.toFixed(3)})`);
+        debug_trunc(`  Non-chat budget: ${nonChatBudget} tokens (measured from prompt, no correction needed)`);
     }
     
     // Track token map usage
@@ -967,9 +964,16 @@ function calculate_truncation_index() {
             // Messages at or after startIndex are kept in full
             const lagging = i < startIndex;
             if (!lagging) {
-                // Kept message - use full token count with correction factor
+                // Kept message - use full token count
                 const rawEstimate = estimateMessagePromptTokens(message, i);
-                total += Math.floor(rawEstimate * CHAT_TOKEN_CORRECTION_FACTOR);
+                // V35 FIX: Only apply correction factor to ESTIMATED tokens (map misses)
+                // Map hits are actual measured tokens and should not be corrected
+                const isFromMap = message_token_map && message_token_map.has(i);
+                if (isFromMap) {
+                    total += rawEstimate;  // Actual measured value, no correction
+                } else {
+                    total += Math.floor(rawEstimate * CHAT_TOKEN_CORRECTION_FACTOR);  // Estimated, needs correction
+                }
                 continue;
             }
             
@@ -1691,11 +1695,17 @@ function calibrate_target_size(actualSize) {
                     debug_trunc(`  → Remaining in CALIBRATING`);
                 }
             } else {
-                // Fix 1.2: Gradual decay instead of complete reset
-                // Only decay by 1-2 instead of resetting to 0, preserving some progress
-                const decayAmount = deviation > tolerance * 1.5 ? 2 : 1;
-                STABLE_COUNT = Math.max(0, STABLE_COUNT - decayAmount);
-                debug_trunc(`  Outside tolerance, stable count decayed by ${decayAmount} to ${STABLE_COUNT}`);
+                // V35 FIX: More lenient decay - only decay if significantly over tolerance
+                // Small overshoots (< 1% over tolerance) should not trigger decay
+                const toleranceOvershoot = deviation - tolerance;
+                if (toleranceOvershoot > 0.01) {  // Only decay if more than 1% over tolerance
+                    // Decay by 1 for moderate overshoot, 2 for large overshoot
+                    const decayAmount = deviation > tolerance * 1.5 ? 2 : 1;
+                    STABLE_COUNT = Math.max(0, STABLE_COUNT - decayAmount);
+                    debug_trunc(`  Outside tolerance by ${(toleranceOvershoot * 100).toFixed(1)}%, stable count decayed by ${decayAmount} to ${STABLE_COUNT}`);
+                } else {
+                    debug_trunc(`  Marginally outside tolerance (${(toleranceOvershoot * 100).toFixed(1)}% over), preserving stable count at ${STABLE_COUNT}`);
+                }
                 
                 // Recalculate target
                 calculate_calibrated_target(maxContext, targetUtilization);
@@ -1750,16 +1760,17 @@ function calculate_calibrated_target(maxContext, targetUtilization) {
     
     const idealTarget = Math.floor(maxContext * targetUtilization);
     
-    // Fix 3.1 & 3.2: Account for Qdrant variance using averaged tokens
-    let qdrantAdjustment = 0;
+    // V35 FIX: Remove Qdrant adjustment here - it's already handled in calculate_truncation_index()
+    // via the Synergy adjustment. Double-subtracting causes underutilization.
+    // Log the average for debugging but don't subtract it again.
     if (get_settings('qdrant_enabled') && get_settings('account_qdrant_tokens')) {
-        qdrantAdjustment = get_averaged_qdrant_tokens();
-        debug_trunc(`    Qdrant token average: ${qdrantAdjustment} (from ${QDRANT_TOKEN_HISTORY.length} samples)`);
+        const qdrantAvg = get_averaged_qdrant_tokens();
+        debug_trunc(`    Qdrant token average: ${qdrantAvg} (already subtracted in truncation calc, not applied here)`);
     }
     
     // Fix 4.1: Dampened target adjustment - move only 70% toward the ideal
     // This prevents overcorrection and oscillation
-    const rawAdjustedTarget = Math.floor((idealTarget - qdrantAdjustment) / CHAT_TOKEN_CORRECTION_FACTOR);
+    const rawAdjustedTarget = Math.floor(idealTarget / CHAT_TOKEN_CORRECTION_FACTOR);
     const currentTarget = get_settings('target_context_size');
     const dampingFactor = 0.7;  // Only move 70% of the way to the new target
     const adjustedTarget = Math.floor(currentTarget + (rawAdjustedTarget - currentTarget) * dampingFactor);

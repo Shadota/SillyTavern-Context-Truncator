@@ -225,10 +225,8 @@ let VECTOR_STATS = {
 };
 
 // Message change resilience (deletion/edit tracking)
-let DELETION_COUNT = 0;           // Number of impactful deletions since last calibration checkpoint
 let LAST_CHAT_LENGTH = 0;         // Track chat length to detect deletions
 let LAST_CHAT_HASHES = new Map(); // Map of message index -> content hash for edit detection
-const DELETION_TOLERANCE = 3;     // Max deletions before soft recalibration
 
 // V29: Pre-snapshot state for deletion detection (fixes race condition)
 let PRE_SNAPSHOT_CHAT_LENGTH = 0;
@@ -628,7 +626,6 @@ function load_truncation_index() {
         GENERATION_COUNT = chat_metadata[MODULE_NAME].generation_count || 0;
         STABLE_COUNT = chat_metadata[MODULE_NAME].stable_count || 0;
         RETRAIN_COUNT = chat_metadata[MODULE_NAME].retrain_count || 0;
-        DELETION_COUNT = chat_metadata[MODULE_NAME].deletion_count || 0;
         QDRANT_TOKEN_HISTORY = chat_metadata[MODULE_NAME].qdrant_token_history || [];
         debug(`Loaded calibration state: ${CALIBRATION_STATE}, stable: ${STABLE_COUNT}/${STABLE_THRESHOLD}`);
     } else {
@@ -648,7 +645,6 @@ function load_truncation_index() {
             debug(`No calibration state found, reset to WAITING`);
         }
         RETRAIN_COUNT = 0;
-        DELETION_COUNT = 0;
         QDRANT_TOKEN_HISTORY = [];
     }
 }
@@ -666,7 +662,6 @@ function save_truncation_index() {
     chat_metadata[MODULE_NAME].generation_count = GENERATION_COUNT;
     chat_metadata[MODULE_NAME].stable_count = STABLE_COUNT;
     chat_metadata[MODULE_NAME].retrain_count = RETRAIN_COUNT;
-    chat_metadata[MODULE_NAME].deletion_count = DELETION_COUNT;
     chat_metadata[MODULE_NAME].qdrant_token_history = QDRANT_TOKEN_HISTORY;
     
     debug(`Saved truncation index: ${TRUNCATION_INDEX}, correction factor: ${CHAT_TOKEN_CORRECTION_FACTOR.toFixed(3)}, state: ${CALIBRATION_STATE}`);
@@ -770,30 +765,11 @@ function handle_message_deleted() {
     debug_trunc(`  Deletions before truncation: ${deletionsBeforeTruncation}`);
     debug_trunc(`  Deletions after truncation: ${deletionsAfterTruncation}`);
     
-    // Only count deletions that affect calibration (before/at truncation point)
-    // Deletions after truncation point are "free" - they don't destabilize anything
-    const impactfulDeletions = deletionsBeforeTruncation;
-    
-    if (impactfulDeletions > 0) {
-        DELETION_COUNT += impactfulDeletions;
-        debug_trunc(`  Impactful deletion count: ${DELETION_COUNT}/${DELETION_TOLERANCE}`);
-    } else {
-        debug_trunc(`  No impactful deletions (all were in recent context)`);
-    }
-    
-    // Check if tolerance exceeded
-    if (DELETION_COUNT >= DELETION_TOLERANCE) {
-        trigger_soft_recalibration('deletion tolerance exceeded');
-    }
-    
     // Save updated truncation index
     save_truncation_index();
     
     // Update snapshot
     snapshot_chat_state();
-
-    // Update UI
-    update_resilience_ui();
 
     // Refresh memory
     refresh_memory();
@@ -804,30 +780,6 @@ function handle_message_deleted() {
     debug_trunc(`═══════════════════════════════`);
 }
 
-// Trigger soft recalibration (preserves correction factor)
-function trigger_soft_recalibration(reason) {
-    debug_trunc(`Triggering soft recalibration: ${reason}`);
-    
-    // Don't go back to WAITING or INITIAL_TRAINING
-    // Just reset to CALIBRATING to preserve learned correction factor
-    if (CALIBRATION_STATE === 'STABLE' || CALIBRATION_STATE === 'CALIBRATING') {
-        CALIBRATION_STATE = 'CALIBRATING';
-        STABLE_COUNT = 0;
-        DELETION_COUNT = 0;
-        
-        toastr.warning(
-            `Calibration reset due to ${reason}. Re-stabilizing...`,
-            MODULE_NAME_FANCY
-        );
-    } else if (CALIBRATION_STATE === 'RETRAINING') {
-        // Already retraining, just reset counter
-        DELETION_COUNT = 0;
-    }
-    // If WAITING or INITIAL_TRAINING, don't interrupt - these are essential
-    
-    update_calibration_ui();
-    update_resilience_ui();
-}
 
 // Detect message edits by comparing hashes
 function detect_message_edits() {
@@ -863,23 +815,6 @@ function detect_message_edits() {
     snapshot_chat_state();
 }
 
-// Update resilience UI (deletion counter display)
-function update_resilience_ui() {
-    const $count = $('#ct_ov_deletion_count');
-    
-    if ($count.length === 0) return;
-    
-    const countText = `${DELETION_COUNT}/${DELETION_TOLERANCE}`;
-    $count.text(countText);
-    
-    // Color coding: white by default, red only at tolerance-1 (about to trigger)
-    $count.removeClass('ct_text_green ct_text_yellow ct_text_red');
-    if (DELETION_COUNT >= DELETION_TOLERANCE - 1) {
-        // At or above tolerance-1 = red (about to trigger recalibration)
-        $count.addClass('ct_text_red');
-    }
-    // Otherwise default white text (no class needed)
-}
 
 function should_recalculate_truncation() {
     // Recalculate if target size changed
@@ -1693,9 +1628,7 @@ function calibrate_target_size(actualSize) {
                 
                 if (STABLE_COUNT >= STABLE_THRESHOLD) {
                     CALIBRATION_STATE = 'STABLE';
-                    DELETION_COUNT = 0;  // Reset deletion counter on reaching stable
                     toastr.success(`Calibration complete! Target: ${get_settings('target_context_size').toLocaleString()} tokens`, MODULE_NAME_FANCY);
-                    update_resilience_ui();
                 }
             } else {
                 // V34 FIX: More lenient decay - only decay if significantly over tolerance
@@ -1908,6 +1841,29 @@ function update_calibration_ui() {
     } else {
         $utilization.text('-');
     }
+    
+    // Update stability UI
+    update_stability_ui();
+}
+
+// Update stability progress UI display (V33)
+function update_stability_ui() {
+    const $stableCount = $('#ct_ov_stable_count');
+    
+    if ($stableCount.length === 0) return;
+    
+    const requiredStable = 3; // Matches STABLE_THRESHOLD constant
+    const countText = `${STABLE_COUNT}/${requiredStable}`;
+    $stableCount.text(countText);
+    
+    // Color coding: green when close to stable
+    $stableCount.removeClass('ct_text_green ct_text_yellow ct_text_red');
+    if (STABLE_COUNT >= requiredStable) {
+        $stableCount.addClass('ct_text_green');
+    } else if (STABLE_COUNT >= requiredStable - 1) {
+        $stableCount.addClass('ct_text_yellow');
+    }
+    // Otherwise default white text
 }
 
 // ==================== OVERVIEW TAB FUNCTIONS ====================
@@ -2942,6 +2898,72 @@ function escapeHtml(text) {
     return div.innerHTML;
 }
 
+// Helper function to escape regex special characters
+function escapeRegex(string) {
+    return string.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+// Validate summary output against prompt specifications (V33)
+function validate_summary(summary, ctx, maxWords) {
+    if (!summary || typeof summary !== 'string') {
+        return { valid: false, reason: 'Empty or invalid summary' };
+    }
+    
+    const trimmed = summary.trim();
+    
+    // Rule 1: Minimum length (too short = incomplete)
+    if (trimmed.length < 15) {
+        return { valid: false, reason: `Too short: ${trimmed.length} chars (min 15)` };
+    }
+    
+    // Rule 2: Must start with speaker label
+    const charName = ctx.name2 || 'Character';
+    const userName = ctx.name1 || 'User';
+    const speakerPattern = new RegExp(
+        `^(${escapeRegex(charName)}:|${escapeRegex(userName)}:|Narrator:)`,
+        'i'
+    );
+    if (!speakerPattern.test(trimmed)) {
+        return { valid: false, reason: 'Missing speaker label at start' };
+    }
+    
+    // Rule 3: Word count check
+    const wordCount = trimmed.split(/\s+/).length;
+    if (wordCount > maxWords) {
+        return { valid: false, reason: `Too many words: ${wordCount} > ${maxWords}` };
+    }
+    
+    // Rule 4: No forbidden patterns (thinking, reasoning)
+    const forbiddenPatterns = [
+        { pattern: /<think>/i, name: '<think> tag' },
+        { pattern: /<\/think>/i, name: '</think> tag' },
+        { pattern: /^Hmm,?/i, name: 'Hmm reasoning' },
+        { pattern: /^Let me\b/i, name: 'Let me...' },
+        { pattern: /^I need to\b/i, name: 'I need to...' },
+        { pattern: /^First,\b/i, name: 'First,...' },
+        { pattern: /^Looking at\b/i, name: 'Looking at...' },
+        { pattern: /^Analyzing\b/i, name: 'Analyzing...' },
+        { pattern: /^I think\b/i, name: 'I think...' },
+        { pattern: /^Now,\b/i, name: 'Now,...' },
+        { pattern: /\(\s*\d+\s*words?\s*\)/i, name: 'word count annotation' },
+    ];
+    
+    for (const { pattern, name } of forbiddenPatterns) {
+        if (pattern.test(trimmed)) {
+            return { valid: false, reason: `Contains forbidden pattern: ${name}` };
+        }
+    }
+    
+    // Rule 5: Should be roughly one sentence (no multiple sentences)
+    // Check for sentence-ending punctuation followed by space and uppercase
+    const multipleSentencePattern = /[.!?]\s+[A-Z]/;
+    if (multipleSentencePattern.test(trimmed)) {
+        return { valid: false, reason: 'Multiple sentences detected' };
+    }
+    
+    return { valid: true, reason: null };
+}
+
 // Summarization functionality
 class SummaryQueue {
     constructor() {
@@ -3386,54 +3408,95 @@ class SummaryQueue {
                     const raw = (typeof result === 'string') ? result : (result?.toString?.() || '');
                     let rawSummary = raw;
 
-                    // Clean the output - remove any thinking content that might have snuck through
-                    let summary = this.clean_summary_output(rawSummary);
+                    // V33: Validation loop with max 3 attempts
+                    const maxWords = get_settings('summary_max_words') || 50;
+                    let validationAttempt = 0;
+                    const maxValidationAttempts = 3;
+                    let finalSummary = null;
+                    let lastValidationReason = null;
 
-                    // Retry once with doubled tokens if summary too short
-                    if (summary.length < 10) {
-                        debug_trunc(`Summary too short (${summary.length} chars), retrying with 2x tokens`);
-                        const doubledTokens = (get_settings('summary_max_tokens') || 500) * 2;
-                        try {
-                            const retryResult = await call_summary_endpoint(prompt, {
-                                signal: this.abortController?.signal,
-                                maxTokensOverride: doubledTokens
-                            });
-                            if (retryResult) {
-                                summary = this.clean_summary_output(retryResult);
-                                debug_trunc(`Retry produced ${summary.length} char summary`);
+                    while (validationAttempt < maxValidationAttempts && !this.stopped) {
+                        validationAttempt++;
+                        
+                        // On first attempt, use the result we already have
+                        // On subsequent attempts, regenerate
+                        let summaryToValidate;
+                        if (validationAttempt === 1) {
+                            summaryToValidate = this.clean_summary_output(rawSummary);
+                        } else {
+                            debug_trunc(`Validation retry ${validationAttempt}/${maxValidationAttempts} for message ${index}`);
+                            
+                            // Regenerate with doubled tokens on retry
+                            const retryTokens = (get_settings('summary_max_tokens') || 500) * 2;
+                            try {
+                                let retryResult;
+                                if (get_settings('summary_endpoint_url')) {
+                                    retryResult = await call_summary_endpoint(prompt, {
+                                        signal: this.abortController?.signal,
+                                        maxTokensOverride: retryTokens
+                                    });
+                                } else {
+                                    retryResult = await generateRaw({ prompt: prompt });
+                                }
+                                
+                                if (!retryResult) continue;
+                                summaryToValidate = this.clean_summary_output(retryResult);
+                            } catch (retryErr) {
+                                debug_trunc(`Retry generation failed: ${retryErr.message}`);
+                                continue;
                             }
-                        } catch (retryErr) {
-                            debug_trunc(`Retry failed: ${retryErr.message}`);
+                        }
+                        
+                        // If cleaning removed the speaker label, add it back
+                        if (summaryToValidate && !summaryToValidate.includes(':')) {
+                            summaryToValidate = speakerLabel + ' ' + summaryToValidate;
+                        }
+                        
+                        // Validate the summary
+                        const validation = validate_summary(summaryToValidate, ctx, maxWords);
+                        
+                        if (validation.valid) {
+                            // Trim incomplete sentences if enabled
+                            if (ctx.powerUserSettings?.trim_sentences) {
+                                summaryToValidate = trimToEndSentence(summaryToValidate);
+                            }
+                            
+                            // Final length enforcement
+                            if (summaryToValidate.length > 300) {
+                                summaryToValidate = summaryToValidate.substring(0, 300);
+                                summaryToValidate = trimToEndSentence(summaryToValidate);
+                            }
+                            
+                            finalSummary = summaryToValidate;
+                            break;
+                        } else {
+                            lastValidationReason = validation.reason;
+                            debug_trunc(`Validation failed (attempt ${validationAttempt}): ${validation.reason}`);
                         }
                     }
 
-                    // If cleaning removed the speaker label, add it back
-                    if (!summary.includes(':')) {
-                        summary = speakerLabel + ' ' + summary;
-                    }
-
-                    // Trim incomplete sentences if enabled
-                    if (ctx.powerUserSettings?.trim_sentences) {
-                        summary = trimToEndSentence(summary);
-                    }
-
-                    // Validate the summary looks reasonable and mark for review if still too short
-                    if (summary.length < 10) {
-                        debug_trunc(`Warning: Summary still too short after retry (${summary.length}), marking for review`);
+                    // Handle result
+                    if (finalSummary) {
+                        // Store summary
+                        set_data(message, 'memory', finalSummary);
+                        set_data(message, 'needs_summary', false);
+                        set_data(message, 'hash', getStringHash(message.mes));
+                        
+                        debug(`Summarized message ${index}: "${finalSummary}"`);
+                    } else {
+                        // All attempts failed - mark for manual review and log if debug enabled
                         set_data(message, 'needs_manual_review', true);
-                    } else if (summary.length > 300) {
-                        // Truncate overly long summaries (shouldn't happen with prefill but safety measure)
-                        debug(`Warning: Summary too long (${summary.length}), truncating`);
-                        summary = summary.substring(0, 300);
-                        summary = trimToEndSentence(summary);
+                        set_data(message, 'needs_summary', true);  // Keep in pending state
+                        
+                        if (get_settings('debug_truncation')) {
+                            const preview = message.mes.substring(0, 100) + (message.mes.length > 100 ? '...' : '');
+                            console.log(`[${MODULE_NAME_FANCY}][Truncation] Summary validation failed for message ${index} after ${maxValidationAttempts} attempts`);
+                            console.log(`  Last attempt reason: ${lastValidationReason}`);
+                            console.log(`  Message preview: ${preview}`);
+                        }
+                        
+                        debug(`Dropped summary for message ${index} after ${maxValidationAttempts} failed attempts`);
                     }
-
-                    // Store summary
-                    set_data(message, 'memory', summary);
-                    set_data(message, 'needs_summary', false);
-                    set_data(message, 'hash', getStringHash(message.mes));
-
-                    debug(`Summarized message ${index}: "${summary}"`);
                 }
                 
                 // Release lock after successful completion
@@ -3514,7 +3577,7 @@ function register_event_listeners() {
             // Clear Qdrant memories for new chat (these are transient, not persisted)
             CURRENT_QDRANT_MEMORIES = [];
             CURRENT_QDRANT_INJECTION = '';
-            // NOTE: QDRANT_TOKEN_HISTORY and DELETION_COUNT are now loaded from chat_metadata
+            // NOTE: QDRANT_TOKEN_HISTORY is now loaded from chat_metadata
             // by load_truncation_index() - no manual reset needed
         }
         currentChatId = newChatId;
@@ -3523,7 +3586,6 @@ function register_event_listeners() {
         snapshot_chat_state();
         
         refresh_memory();
-        update_resilience_ui();
         
         // Update UI with loaded state immediately (don't wait for generation)
         update_overview_tab();

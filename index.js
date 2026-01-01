@@ -1907,16 +1907,6 @@ function update_overview_tab() {
 
     const maxContext = getMaxContextSize();
 
-    // Update estimation mode warning banner
-    const $warning = $('#ct_estimation_warning');
-    if ($warning.length > 0) {
-        if (USING_ESTIMATION_MODE) {
-            $warning.show();
-        } else {
-            $warning.hide();
-        }
-    }
-
     // Declare actualSize at function scope with default
     let actualSize = 0;
 
@@ -2064,8 +2054,10 @@ function update_overview_tab() {
                 const truncationActive = TRUNCATION_INDEX !== null && TRUNCATION_INDEX > 0;
                 if (truncationActive) {
                     progressText = `Truncation active (${TRUNCATION_INDEX} excluded)`;
-                } else {
+                } else if (LAST_ACTUAL_PROMPT_SIZE > 0) {
                     progressText = `${LAST_ACTUAL_PROMPT_SIZE.toLocaleString()} / ${startThreshold.toLocaleString()}`;
+                } else {
+                    progressText = '0/2';  // Show generation count format before any data
                 }
                 break;
             case 'INITIAL_TRAINING':
@@ -3782,7 +3774,18 @@ function initialize_ui_listeners() {
     $('#ct_reset_all').on('click', () => {
         reset_truncation_index();
         reset_calibration();
-        toastr.info('Reset complete - truncation and calibration cleared', MODULE_NAME_FANCY);
+        
+        // Show status message
+        const $status = $('#ct_reset_all_status');
+        $status.text('✓ Reset complete - truncation and calibration cleared')
+               .removeClass('ct_status_error')
+               .addClass('ct_status_success')
+               .show();
+        
+        // Auto-hide after 10 seconds
+        setTimeout(() => {
+            $status.fadeOut();
+        }, 10000);
     });
     
     // Force Recalibrate button - resets ONLY the correction factor (not truncation index)
@@ -3927,7 +3930,18 @@ function initialize_ui_listeners() {
     $('#ct_ov_reset_all').on('click', () => {
         reset_truncation_index();
         reset_calibration();
-        toastr.info('Reset complete - truncation and calibration cleared', MODULE_NAME_FANCY);
+        
+        // Show status message
+        const $status = $('#ct_ov_reset_all_status');
+        $status.text('✓ Reset complete - truncation and calibration cleared')
+               .removeClass('ct_status_error')
+               .addClass('ct_status_success')
+               .show();
+        
+        // Auto-hide after 10 seconds
+        setTimeout(() => {
+            $status.fadeOut();
+        }, 10000);
     });
     
     // Overview summarize button (toggles between start and stop)
@@ -4717,9 +4731,14 @@ function update_indexing_button_state(state) {
 async function delete_current_collection() {
     const url = get_settings('qdrant_url');
     const collection = get_current_collection_name();
+    const $status = $('#ct_delete_collection_status');
     
     if (!url || !collection) {
-        toastr.error('Qdrant not configured', MODULE_NAME_FANCY);
+        $status.text('✗ Qdrant not configured')
+               .removeClass('ct_status_success')
+               .addClass('ct_status_error')
+               .show();
+        setTimeout(() => { $status.fadeOut(); }, 10000);
         return;
     }
     
@@ -4732,13 +4751,21 @@ async function delete_current_collection() {
         });
         
         if (response.ok) {
-            toastr.success(`Deleted collection "${collection}"`, MODULE_NAME_FANCY);
+            $status.text(`✓ Deleted collection "${collection}"`)
+                   .removeClass('ct_status_error')
+                   .addClass('ct_status_success')
+                   .show();
+            setTimeout(() => { $status.fadeOut(); }, 10000);
             debug_qdrant(`Deleted collection: ${collection}`);
         } else {
             throw new Error(`HTTP ${response.status}`);
         }
     } catch (e) {
-        toastr.error(`Failed to delete collection: ${e.message}`, MODULE_NAME_FANCY);
+        $status.text(`✗ Failed to delete collection: ${e.message}`)
+               .removeClass('ct_status_success')
+               .addClass('ct_status_error')
+               .show();
+        setTimeout(() => { $status.fadeOut(); }, 10000);
         error('Failed to delete collection:', e);
     }
 }
@@ -6178,45 +6205,148 @@ async function handle_qdrant_message_deleted() {
     if (!get_settings('qdrant_enabled')) return;
     if (!get_settings('delete_on_message_delete')) return;
     
+    const url = get_settings('qdrant_url');
+    const collection = get_current_collection_name();
+    
+    if (!url || !collection) return;
+    
     const ctx = getContext();
     const chat = ctx.chat;
     const currentLength = chat ? chat.length : 0;
-    const previousLength = LAST_CHAT_LENGTH;
     
-    if (currentLength >= previousLength) return;  // No deletion
+    // Use PRE_SNAPSHOT to determine which messages were deleted
+    const deletedCount = PRE_SNAPSHOT_CHAT_LENGTH - currentLength;
+    if (deletedCount <= 0) return;
     
-    debug_qdrant(`Message deletion detected: ${previousLength} -> ${currentLength}`);
+    debug_qdrant(`Handling Qdrant deletion for ${deletedCount} message(s)`);
     
-    // Find deleted message hashes by comparing snapshots
-    const deletedHashes = [];
-    
-    for (const [idx, oldHash] of LAST_CHAT_HASHES) {
-        const currentMessage = chat[idx];
-        const newHash = currentMessage ? compute_message_hash(currentMessage) : null;
+    try {
+        // Find deleted message hashes by comparing snapshots
+        const deletedHashes = [];
+        const deletedIndexes = [];
         
-        if (oldHash !== newHash) {
-            // This message was deleted or changed
-            // Look for vector_hash in our records
-            // Since message is deleted, we need to use the stored hash from LAST_CHAT_HASHES
-            deletedHashes.push(oldHash);
+        for (const [index, hash] of PRE_SNAPSHOT_CHAT_HASHES) {
+            // Check if this index/hash is still in current chat
+            const currentMessage = chat[index];
+            const currentHash = currentMessage ? compute_message_hash(currentMessage) : null;
+            
+            if (!currentHash || currentHash !== hash) {
+                deletedHashes.push(hash);
+                deletedIndexes.push(index);
+            }
         }
-    }
-    
-    if (deletedHashes.length === 0) {
-        debug_qdrant('No hashes found for deleted messages');
-        return;
-    }
-    
-    debug_qdrant(`Found ${deletedHashes.length} hashes to delete from Qdrant`);
-    
-    // Delete each hash from Qdrant
-    for (const hash of deletedHashes) {
-        try {
-            await delete_qdrant_point_by_hash(hash);
-        } catch (e) {
-            error(`Failed to delete Qdrant point for hash ${hash}:`, e);
+        
+        if (deletedHashes.length === 0) return;
+        
+        debug_qdrant(`Found ${deletedHashes.length} deleted message hashes:`, deletedHashes);
+        
+        // Delete per-message vectors by hash
+        for (const hash of deletedHashes) {
+            await delete_vectors_by_hash(url, collection, hash);
         }
+        
+        // Delete chunks containing any deleted message indexes
+        const reQueueIndexes = await delete_chunks_containing_indexes(url, collection, deletedIndexes);
+        
+        // Re-queue surviving messages from deleted chunks for re-vectorization
+        if (reQueueIndexes.length > 0) {
+            debug_qdrant(`Re-queuing ${reQueueIndexes.length} messages for vectorization`);
+            for (const idx of reQueueIndexes) {
+                if (chat[idx] && !chat[idx].is_system) {
+                    const msg = chat[idx];
+                    buffer_message(idx, msg.mes, msg.is_user);
+                }
+            }
+        }
+        
+    } catch (e) {
+        error('Failed to delete Qdrant vectors:', e);
+        // Don't block message deletion on Qdrant errors
     }
+}
+
+// Delete vectors matching a message hash
+async function delete_vectors_by_hash(url, collection, hash) {
+    try {
+        const ctx = getContext();
+        const response = await fetch(`${url}/collections/${collection}/points/delete`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                filter: {
+                    must: [
+                        { key: 'message_hash', match: { value: hash } },
+                        { key: 'chat_id', match: { value: ctx.chatId } }
+                    ]
+                }
+            })
+        });
+        
+        if (response.ok) {
+            debug_qdrant(`Deleted vectors with hash: ${hash}`);
+        }
+    } catch (e) {
+        debug_qdrant(`Failed to delete vectors by hash: ${e.message}`);
+    }
+}
+
+// Delete chunks containing any of the given message indexes, return indexes to re-queue
+async function delete_chunks_containing_indexes(url, collection, deletedIndexes) {
+    const reQueueIndexes = [];
+    
+    try {
+        const ctx = getContext();
+        
+        // Search for chunks containing any deleted index
+        for (const deletedIndex of deletedIndexes) {
+            // Find chunks where message_indexes array contains deletedIndex
+            const searchResponse = await fetch(`${url}/collections/${collection}/points/scroll`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    filter: {
+                        must: [
+                            { key: 'message_indexes', match: { any: [deletedIndex] } },
+                            { key: 'chat_id', match: { value: ctx.chatId } }
+                        ]
+                    },
+                    limit: 100,
+                    with_payload: true
+                })
+            });
+            
+            if (!searchResponse.ok) continue;
+            
+            const data = await searchResponse.json();
+            const points = data.result?.points || [];
+            
+            for (const point of points) {
+                const chunkIndexes = point.payload?.message_indexes || [];
+                
+                // Collect indexes that should be re-queued (not the deleted one)
+                for (const idx of chunkIndexes) {
+                    if (!deletedIndexes.includes(idx) && !reQueueIndexes.includes(idx)) {
+                        reQueueIndexes.push(idx);
+                    }
+                }
+                
+                // Delete the chunk
+                await fetch(`${url}/collections/${collection}/points/delete`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        points: [point.id]
+                    })
+                });
+                
+                debug_qdrant(`Deleted chunk ${point.id} containing message ${deletedIndex}`);
+            }
+        }
+    } catch (e) {
+        debug_qdrant(`Failed to delete chunks: ${e.message}`);
+    }
+    
+    return reQueueIndexes;
 }
 
 // Index entire current chat

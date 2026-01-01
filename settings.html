@@ -29,12 +29,6 @@
                 <div class="ct_overview_section">
                     <h4><i class="fa-solid fa-gauge-high"></i> Context Utilization</h4>
                     
-                    <!-- Estimation Mode Warning Banner -->
-                    <div id="ct_estimation_warning" class="ct_estimation_warning" style="display: none;">
-                        <i class="fa-solid fa-triangle-exclamation"></i>
-                        <span>⚠️ Large Chat Mode: Token counts are ESTIMATED (~4 chars/token). Calibration accuracy reduced. Consider trimming chat history.</span>
-                    </div>
-                    
                     <div class="ct_gauge_container">
                         <div class="ct_gauge_bar">
                             <div id="ct_gauge_fill" class="ct_gauge_fill ct_gauge_green" style="width: 0%"></div>
@@ -350,6 +344,7 @@
                             <i class="fa-solid fa-compress"></i> <span>Summarize All</span>
                         </button>
                     </div>
+                    <div id="ct_ov_reset_all_status" class="ct_status_message" style="margin-top: 8px;"></div>
                 </div>
 
             </div>
@@ -564,6 +559,7 @@
                         <i class="fa-solid fa-compress"></i> <span>Summarize All</span>
                     </button>
                 </div>
+                <div id="ct_reset_all_status" class="ct_status_message" style="margin-top: 8px;"></div>
 
                 <hr class="ct_section_divider">
 
@@ -737,6 +733,7 @@
                         <i class="fa-solid fa-trash"></i> Delete Collection
                     </button>
                 </div>
+                <div id="ct_delete_collection_status" class="ct_status_message" style="margin-top: 8px;"></div>
 
                 <hr class="ct_section_divider">
 
@@ -881,15 +878,6 @@
                         </span>
                     </div>
 
-                    <div class="ct_compact_checkbox">
-                        <input id="ct_debug_qdrant" type="checkbox" />
-                        <label for="ct_debug_qdrant">Debug Mode</label>
-                        <span class="ct_tooltip ct_tooltip_right">
-                            <i class="fa-solid fa-circle-info ct_info_icon"></i>
-                            <span class="ct_tooltip_text">Enable console logging for Qdrant operations and embeddings.</span>
-                        </span>
-                    </div>
-
                     <!-- Chunked Vectorization (V10) -->
                     <div class="ct_section_header">
                         <i class="fa-solid fa-layer-group"></i>
@@ -1029,6 +1017,15 @@
                             <span id="ct_temporal_midpoint_display" class="ct_setting_value">0.30</span>
                         </div>
                         <input id="ct_temporal_midpoint" class="ct_compact_slider" type="range" min="0.1" max="0.9" step="0.05" value="0.3" />
+                    </div>
+
+                    <div class="ct_compact_checkbox">
+                        <input id="ct_debug_qdrant" type="checkbox" />
+                        <label for="ct_debug_qdrant">Debug Mode</label>
+                        <span class="ct_tooltip ct_tooltip_right">
+                            <i class="fa-solid fa-circle-info ct_info_icon"></i>
+                            <span class="ct_tooltip_text">Enable console logging for Qdrant operations and embeddings.</span>
+                        </span>
                     </div>
 
                 </div>

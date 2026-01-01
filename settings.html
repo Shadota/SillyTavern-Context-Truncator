@@ -52,18 +52,20 @@
                     <h4><i class="fa-solid fa-chart-bar"></i> Context Breakdown</h4>
                     <div class="ct_breakdown_container">
                         <div class="ct_breakdown_bar">
-                            <div id="ct_breakdown_chat" class="ct_breakdown_segment ct_breakdown_chat" style="width: 0%"></div>
+                            <!-- VIS-010: Reordered to System → Summaries → World Rules → Chat → Qdrant → Free -->
                             <div id="ct_breakdown_system" class="ct_breakdown_segment ct_breakdown_system" style="width: 0%"></div>
-                            <div id="ct_breakdown_worldrules" class="ct_breakdown_segment ct_breakdown_worldrules" style="width: 0%"></div>
                             <div id="ct_breakdown_summaries" class="ct_breakdown_segment ct_breakdown_summaries" style="width: 0%"></div>
+                            <div id="ct_breakdown_worldrules" class="ct_breakdown_segment ct_breakdown_worldrules" style="width: 0%"></div>
+                            <div id="ct_breakdown_chat" class="ct_breakdown_segment ct_breakdown_chat" style="width: 0%"></div>
                             <div id="ct_breakdown_qdrant" class="ct_breakdown_segment ct_breakdown_qdrant" style="width: 0%"></div>
                             <div id="ct_breakdown_free" class="ct_breakdown_segment ct_breakdown_free" style="width: 100%"></div>
                         </div>
                         <div class="ct_breakdown_legend">
-                            <span class="ct_legend_item"><span class="ct_legend_color ct_breakdown_chat"></span>Chat</span>
+                            <!-- VIS-010: Reordered to System → Summaries → World Rules → Chat → Qdrant → Free -->
                             <span class="ct_legend_item"><span class="ct_legend_color ct_breakdown_system"></span>System</span>
-                            <span class="ct_legend_item"><span class="ct_legend_color ct_breakdown_worldrules"></span>World Rules</span>
                             <span class="ct_legend_item"><span class="ct_legend_color ct_breakdown_summaries"></span>Summaries</span>
+                            <span class="ct_legend_item"><span class="ct_legend_color ct_breakdown_worldrules"></span>World Rules</span>
+                            <span class="ct_legend_item"><span class="ct_legend_color ct_breakdown_chat"></span>Chat</span>
                             <span class="ct_legend_item"><span class="ct_legend_color ct_breakdown_qdrant"></span>Qdrant</span>
                             <span class="ct_legend_item"><span class="ct_legend_color ct_breakdown_free"></span>Free</span>
                         </div>
@@ -73,21 +75,22 @@
                             <i class="fa-solid fa-chevron-down"></i>
                         </div>
                         <div class="ct_breakdown_details" id="ct_breakdown_details" style="display: none;">
-                            <div class="ct_breakdown_detail_row">
-                                <span class="ct_breakdown_label"><span class="ct_legend_color ct_breakdown_chat"></span>Chat</span>
-                                <span id="ct_breakdown_chat_tokens" class="ct_breakdown_value">-- tokens</span>
-                            </div>
+                            <!-- VIS-010: Reordered to System → Summaries → World Rules → Chat → Qdrant → Free -->
                             <div class="ct_breakdown_detail_row">
                                 <span class="ct_breakdown_label"><span class="ct_legend_color ct_breakdown_system"></span>System</span>
                                 <span id="ct_breakdown_system_tokens" class="ct_breakdown_value">-- tokens</span>
+                            </div>
+                            <div class="ct_breakdown_detail_row">
+                                <span class="ct_breakdown_label"><span class="ct_legend_color ct_breakdown_summaries"></span>Summaries</span>
+                                <span id="ct_breakdown_summaries_tokens" class="ct_breakdown_value">-- tokens</span>
                             </div>
                             <div class="ct_breakdown_detail_row">
                                 <span class="ct_breakdown_label"><span class="ct_legend_color ct_breakdown_worldrules"></span>World Rules</span>
                                 <span id="ct_breakdown_worldrules_tokens" class="ct_breakdown_value">-- tokens</span>
                             </div>
                             <div class="ct_breakdown_detail_row">
-                                <span class="ct_breakdown_label"><span class="ct_legend_color ct_breakdown_summaries"></span>Summaries</span>
-                                <span id="ct_breakdown_summaries_tokens" class="ct_breakdown_value">-- tokens</span>
+                                <span class="ct_breakdown_label"><span class="ct_legend_color ct_breakdown_chat"></span>Chat</span>
+                                <span id="ct_breakdown_chat_tokens" class="ct_breakdown_value">-- tokens</span>
                             </div>
                             <div class="ct_breakdown_detail_row">
                                 <span class="ct_breakdown_label"><span class="ct_legend_color ct_breakdown_qdrant"></span>Qdrant</span>

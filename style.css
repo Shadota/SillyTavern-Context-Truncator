@@ -331,7 +331,7 @@
 }
 
 .ct_memory_panel_header i:first-child {
-    color: #ce93d8;
+    color: #9e9e9e;  /* VIS-009: Changed from pink (#ce93d8) to gray */
     margin-right: 8px;
 }
 

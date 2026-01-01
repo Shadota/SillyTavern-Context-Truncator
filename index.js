@@ -717,8 +717,8 @@ function handle_message_deleted() {
     const chat = ctx.chat;
     const currentLength = chat ? chat.length : 0;
     
-    // V29 FIX: Use PRE_SNAPSHOT state (before CHAT_CHANGED updated it)
-    const deletedCount = PRE_SNAPSHOT_CHAT_LENGTH - currentLength;
+    // BUG-002 FIX: Use LAST_CHAT_LENGTH (stable snapshot before this event)
+    const deletedCount = LAST_CHAT_LENGTH - currentLength;
     
     if (deletedCount <= 0) {
         // No deletion detected or chat grew
@@ -728,7 +728,7 @@ function handle_message_deleted() {
     
     debug_trunc(`═══ MESSAGE DELETION DETECTED ═══`);
     debug_trunc(`  Deleted: ${deletedCount} message(s)`);
-    debug_trunc(`  Previous length: ${PRE_SNAPSHOT_CHAT_LENGTH}, Current: ${currentLength}`);
+    debug_trunc(`  Previous length: ${LAST_CHAT_LENGTH}, Current: ${currentLength}`);
     
     // Determine deletion location relative to truncation index
     let deletionsBeforeTruncation = 0;
@@ -1869,6 +1869,7 @@ function calibrate_target_size(actualSize) {
     debug_trunc(`═══════════════════════════════════════════════════════════════`);
     save_truncation_index();
     update_calibration_ui();
+    update_overview_tab();  // BUG-001 FIX: Sync Overview tab after state transitions
 }
 
 // Calculate and set calibrated target
@@ -2065,7 +2066,15 @@ function calculate_world_rules_tokens(raw_prompt) {
 
 // Update the Overview tab with current stats
 function update_overview_tab() {
+    // VIS-001 FIX: Handle initial state (no prompt yet)
     const last_raw_prompt = get_last_prompt_raw();
+    if (!last_raw_prompt) {
+        $('#ct_gauge_fill').css('width', '0%');
+        $('#ct_gauge_value').text('0.0%');
+        $('#ct_gauge_max').text('Waiting for first generation...');
+        return;
+    }
+
     const maxContext = getMaxContextSize();
 
     // Declare actualSize at function scope with default
@@ -2434,9 +2443,16 @@ function update_prediction_display() {
     const calibrationPrediction = get_calibration_prediction();
     
     // Next Trim prediction (matches HTML ID: ct_ov_next_trim)
+    // VIS-002 FIX: Show "Calibrating..." during calibration instead of "(target exceeded)"
+    const isCalibrating = ['INITIAL_TRAINING', 'CALIBRATING', 'RETRAINING'].includes(CALIBRATION_STATE);
+    
     if (trimEstimate.generations !== null) {
         if (trimEstimate.generations === 0) {
-            $('#ct_ov_next_trim').text('Imminent (target exceeded)').addClass('ct_text_orange');
+            if (isCalibrating) {
+                $('#ct_ov_next_trim').text('Calibrating...').removeClass('ct_text_orange');
+            } else {
+                $('#ct_ov_next_trim').text('Imminent (target exceeded)').addClass('ct_text_orange');
+            }
         } else {
             $('#ct_ov_next_trim').text(`~${trimEstimate.generations} generation${trimEstimate.generations !== 1 ? 's' : ''}`).removeClass('ct_text_orange');
         }
@@ -2637,16 +2653,15 @@ function openPopout() {
     }
     
     // Create the popout element with reset size button
+    // VIS-006, VIS-007: Removed pie chart icon and X button
     $POPOUT = $(`
         <div id="ct_popout" class="draggable" style="display: none;">
             <div class="panelControlBar flex-container" id="ctPopoutHeader">
-                <div class="fa-solid fa-chart-pie" style="margin-right: 10px;"></div>
                 <div class="title">${MODULE_NAME_FANCY}</div>
                 <div class="flex1"></div>
                 <div class="fa-solid fa-arrows-left-right hoverglow dragReset" title="Reset to default size"></div>
                 <div class="fa-solid fa-grip drag-grabber hoverglow" title="Drag to move"></div>
                 <div class="fa-solid fa-lock-open hoverglow dragLock" title="Lock position"></div>
-                <div class="fa-solid fa-circle-xmark hoverglow dragClose" title="Close"></div>
             </div>
             <div id="ct_popout_content_container"></div>
         </div>
@@ -4284,6 +4299,11 @@ async function test_qdrant_connection() {
             $status.removeClass().addClass('ct_status_message ct_status_success')
                 .text(`Connected! ${collectionCount} collection(s) found`);
             debug_qdrant(`Connection successful: ${collectionCount} collections`);
+            
+            // VIS-003: Auto-clear status after 10 seconds
+            setTimeout(() => {
+                $status.text('').removeClass('ct_status_success ct_status_error ct_status_info');
+            }, 10000);
         } else {
             throw new Error(`HTTP ${response.status}: ${response.statusText}`);
         }
@@ -4291,6 +4311,11 @@ async function test_qdrant_connection() {
         $status.removeClass().addClass('ct_status_message ct_status_error')
             .text(`Connection failed: ${e.message}`);
         error('Qdrant connection test failed:', e);
+        
+        // VIS-003: Auto-clear status after 10 seconds
+        setTimeout(() => {
+            $status.text('').removeClass('ct_status_success ct_status_error ct_status_info');
+        }, 10000);
     }
 }
 // Test Summary Endpoint (OpenAI-compatible)
@@ -4514,6 +4539,11 @@ async function test_embedding() {
             $status.removeClass().addClass('ct_status_message ct_status_success')
                 .text(`Success! Dimensions: ${embedding.length}`);
             debug_qdrant(`Embedding test successful: ${embedding.length} dimensions`);
+            
+            // VIS-003: Auto-clear status after 10 seconds
+            setTimeout(() => {
+                $status.text('').removeClass('ct_status_success ct_status_error ct_status_info');
+            }, 10000);
         } else {
             throw new Error('Empty embedding returned');
         }
@@ -4521,6 +4551,11 @@ async function test_embedding() {
         $status.removeClass().addClass('ct_status_message ct_status_error')
             .text(`Embedding failed: ${e.message}`);
         error('Embedding test failed:', e);
+        
+        // VIS-003: Auto-clear status after 10 seconds
+        setTimeout(() => {
+            $status.text('').removeClass('ct_status_success ct_status_error ct_status_info');
+        }, 10000);
     }
 }
 

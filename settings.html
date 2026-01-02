@@ -17,9 +17,6 @@
                 <button class="ct_tab" data-tab="qdrant">
                     <i class="fa-solid fa-brain"></i> Qdrant Memory
                 </button>
-                <button class="ct_tab" data-tab="synergy">
-                    <i class="fa-solid fa-link"></i> Synergy
-                </button>
             </div>
 
             <!-- ==================== OVERVIEW TAB ==================== -->
@@ -697,6 +694,51 @@
 
                 <hr class="ct_section_divider">
 
+                <!-- Chunk Settings -->
+                <div class="ct_section_header">
+                    <i class="fa-solid fa-layer-group"></i>
+                    <span>Chunk Settings</span>
+                </div>
+
+                <div class="ct_compact_setting">
+                    <div class="ct_setting_header">
+                        <span class="ct_setting_label">
+                            Chunk Min Size
+                            <span class="ct_tooltip">
+                                <i class="fa-solid fa-circle-info ct_info_icon"></i>
+                                <span class="ct_tooltip_text">Minimum characters before flushing chunk to Qdrant</span>
+                            </span>
+                        </span>
+                        <span id="ct_chunk_min_display" class="ct_setting_value">1200 chars</span>
+                    </div>
+                    <input id="ct_chunk_min_size" class="ct_compact_slider" type="range" min="500" max="2000" step="100" value="1200" />
+                </div>
+
+                <div class="ct_compact_setting">
+                    <div class="ct_setting_header">
+                        <span class="ct_setting_label">
+                            Chunk Max Size
+                            <span class="ct_tooltip">
+                                <i class="fa-solid fa-circle-info ct_info_icon"></i>
+                                <span class="ct_tooltip_text">Maximum characters before forcing chunk flush</span>
+                            </span>
+                        </span>
+                        <span id="ct_chunk_max_display" class="ct_setting_value">1500 chars</span>
+                    </div>
+                    <input id="ct_chunk_max_size" class="ct_compact_slider" type="range" min="1000" max="3000" step="100" value="1500" />
+                </div>
+
+                <div class="ct_compact_checkbox">
+                    <input id="ct_account_qdrant_tokens" type="checkbox" checked />
+                    <label for="ct_account_qdrant_tokens">Account for Qdrant Tokens in Context Budget</label>
+                    <span class="ct_tooltip ct_tooltip_right">
+                        <i class="fa-solid fa-circle-info ct_info_icon"></i>
+                        <span class="ct_tooltip_text">Subtract Qdrant injection tokens from target context size</span>
+                    </span>
+                </div>
+
+                <hr class="ct_section_divider">
+
                 <!-- Auto-Save Settings -->
                 <div class="ct_section_header">
                     <i class="fa-solid fa-floppy-disk"></i>
@@ -878,146 +920,6 @@
                         </span>
                     </div>
 
-                    <!-- Chunked Vectorization (V10) -->
-                    <div class="ct_section_header">
-                        <i class="fa-solid fa-layer-group"></i>
-                        <span>Chunked Vectorization</span>
-                    </div>
-
-                    <div class="ct_compact_checkbox">
-                        <input id="ct_enable_chunked_vectorization" type="checkbox" checked />
-                        <label for="ct_enable_chunked_vectorization">Enable Chunked Vectorization</label>
-                        <span class="ct_tooltip ct_tooltip_right">
-                            <i class="fa-solid fa-circle-info ct_info_icon"></i>
-                            <span class="ct_tooltip_text">Group messages into conversational chunks instead of per-message storage. Improves roleplay quality and reduces noise in retrieval.</span>
-                        </span>
-                    </div>
-
-                    <div class="ct_compact_setting">
-                        <div class="ct_setting_header">
-                            <span class="ct_setting_label">
-                                Target Chars
-                                <span class="ct_tooltip">
-                                    <i class="fa-solid fa-circle-info ct_info_icon"></i>
-                                    <span class="ct_tooltip_text">Target character count per chunk. Chunks are flushed when reaching this threshold.</span>
-                                </span>
-                            </span>
-                            <span id="ct_chunk_target_chars_display" class="ct_setting_value">1200</span>
-                        </div>
-                        <input id="ct_chunk_target_chars" class="ct_compact_slider" type="range" min="600" max="2400" step="100" value="1200" />
-                    </div>
-
-                    <div class="ct_compact_setting">
-                        <div class="ct_setting_header">
-                            <span class="ct_setting_label">
-                                Max Chars
-                                <span class="ct_tooltip">
-                                    <i class="fa-solid fa-circle-info ct_info_icon"></i>
-                                    <span class="ct_tooltip_text">Hard limit for chunk size. Chunk is force-flushed at this threshold.</span>
-                                </span>
-                            </span>
-                            <span id="ct_chunk_max_chars_display" class="ct_setting_value">1800</span>
-                        </div>
-                        <input id="ct_chunk_max_chars" class="ct_compact_slider" type="range" min="1000" max="3000" step="100" value="1800" />
-                    </div>
-
-                    <div class="ct_compact_setting">
-                        <div class="ct_setting_header">
-                            <span class="ct_setting_label">
-                                Min Messages
-                                <span class="ct_tooltip">
-                                    <i class="fa-solid fa-circle-info ct_info_icon"></i>
-                                    <span class="ct_tooltip_text">Minimum messages per chunk before it can be flushed.</span>
-                                </span>
-                            </span>
-                            <span id="ct_chunk_min_messages_display" class="ct_setting_value">2</span>
-                        </div>
-                        <input id="ct_chunk_min_messages" class="ct_compact_slider" type="range" min="1" max="5" step="1" value="2" />
-                    </div>
-
-                    <div class="ct_compact_setting">
-                        <div class="ct_setting_header">
-                            <span class="ct_setting_label">
-                                Max Messages
-                                <span class="ct_tooltip">
-                                    <i class="fa-solid fa-circle-info ct_info_icon"></i>
-                                    <span class="ct_tooltip_text">Maximum messages per chunk. Force-flushes at this limit.</span>
-                                </span>
-                            </span>
-                            <span id="ct_chunk_max_messages_display" class="ct_setting_value">8</span>
-                        </div>
-                        <input id="ct_chunk_max_messages" class="ct_compact_slider" type="range" min="3" max="15" step="1" value="8" />
-                    </div>
-
-                    <div class="ct_compact_checkbox">
-                        <input id="ct_chunk_scene_detection" type="checkbox" checked />
-                        <label for="ct_chunk_scene_detection">Scene Detection</label>
-                        <span class="ct_tooltip ct_tooltip_right">
-                            <i class="fa-solid fa-circle-info ct_info_icon"></i>
-                            <span class="ct_tooltip_text">Detect scene/topic boundaries (e.g., [scene], ---, chapter markers) and flush chunks at scene changes.</span>
-                        </span>
-                    </div>
-
-                    <div class="ct_compact_checkbox">
-                        <input id="ct_chunk_include_date_prefix" type="checkbox" checked />
-                        <label for="ct_chunk_include_date_prefix">Include Date Prefix</label>
-                        <span class="ct_tooltip ct_tooltip_right">
-                            <i class="fa-solid fa-circle-info ct_info_icon"></i>
-                            <span class="ct_tooltip_text">Add human-readable date prefix (e.g., "[3 days ago]") to chunks for temporal context.</span>
-                        </span>
-                    </div>
-
-                    <div class="ct_compact_checkbox">
-                        <input id="ct_summary_enhanced_chunks" type="checkbox" checked />
-                        <label for="ct_summary_enhanced_chunks">Summary-Enhanced Chunks</label>
-                        <span class="ct_tooltip ct_tooltip_right">
-                            <i class="fa-solid fa-circle-info ct_info_icon"></i>
-                            <span class="ct_tooltip_text">Use AI summaries as chunk text when available, providing denser semantic signal.</span>
-                        </span>
-                    </div>
-
-                    <!-- Temporal Scoring (V10) -->
-                    <div class="ct_section_header">
-                        <i class="fa-solid fa-clock-rotate-left"></i>
-                        <span>Temporal Scoring</span>
-                    </div>
-
-                    <div class="ct_compact_checkbox">
-                        <input id="ct_enable_temporal_boost" type="checkbox" checked />
-                        <label for="ct_enable_temporal_boost">Enable Temporal Boost</label>
-                        <span class="ct_tooltip ct_tooltip_right">
-                            <i class="fa-solid fa-circle-info ct_info_icon"></i>
-                            <span class="ct_tooltip_text">Boost relevance scores for recent memories using time-decay formula. Balances semantic similarity with recency.</span>
-                        </span>
-                    </div>
-
-                    <div class="ct_compact_setting">
-                        <div class="ct_setting_header">
-                            <span class="ct_setting_label">
-                                Scale (Days)
-                                <span class="ct_tooltip">
-                                    <i class="fa-solid fa-circle-info ct_info_icon"></i>
-                                    <span class="ct_tooltip_text">Half-life for temporal decay. Memories older than this get reduced boost. Higher = slower decay.</span>
-                                </span>
-                            </span>
-                            <span id="ct_temporal_scale_days_display" class="ct_setting_value">7</span>
-                        </div>
-                        <input id="ct_temporal_scale_days" class="ct_compact_slider" type="range" min="1" max="30" step="1" value="7" />
-                    </div>
-
-                    <div class="ct_compact_setting">
-                        <div class="ct_setting_header">
-                            <span class="ct_setting_label">
-                                Midpoint
-                                <span class="ct_tooltip">
-                                    <i class="fa-solid fa-circle-info ct_info_icon"></i>
-                                    <span class="ct_tooltip_text">Minimum score multiplier for old memories. 0.3 means old memories keep at least 30% of their score.</span>
-                                </span>
-                            </span>
-                            <span id="ct_temporal_midpoint_display" class="ct_setting_value">0.30</span>
-                        </div>
-                        <input id="ct_temporal_midpoint" class="ct_compact_slider" type="range" min="0.1" max="0.9" step="0.05" value="0.3" />
-                    </div>
 
                     <div class="ct_compact_checkbox">
                         <input id="ct_debug_qdrant" type="checkbox" />
@@ -1032,84 +934,6 @@
 
             </div>
 
-            <!-- ==================== SYNERGY TAB ==================== -->
-            <div class="ct_tab_content" data-tab="synergy">
-                
-                <div class="ct_info_box">
-                    <i class="fa-solid fa-info-circle"></i>
-                    <span>Synergy features combine truncation and Qdrant memory. Requires both systems enabled.</span>
-                </div>
-
-                <hr class="ct_section_divider">
-
-                <!-- Summary-as-Chunk -->
-                <div class="ct_section_header">
-                    <i class="fa-solid fa-file-zipper"></i>
-                    <span>Summary-as-Chunk</span>
-                </div>
-                
-                <div class="ct_compact_checkbox">
-                    <input id="ct_use_summaries_for_qdrant" type="checkbox" />
-                    <label for="ct_use_summaries_for_qdrant">Use Summaries for Qdrant</label>
-                    <span class="ct_tooltip ct_tooltip_right">
-                        <i class="fa-solid fa-circle-info ct_info_icon"></i>
-                        <span class="ct_tooltip_text">Index AI-generated summaries instead of raw messages. Faster/cheaper but may lose detail.</span>
-                    </span>
-                </div>
-
-                <hr class="ct_section_divider">
-
-                <!-- Memory-Aware Summarization -->
-                <div class="ct_section_header">
-                    <i class="fa-solid fa-brain"></i>
-                    <span>Memory-Aware Summarization</span>
-                </div>
-                
-                <div class="ct_compact_checkbox">
-                    <input id="ct_memory_aware_summaries" type="checkbox" />
-                    <label for="ct_memory_aware_summaries">Include Memories in Context</label>
-                    <span class="ct_tooltip ct_tooltip_right">
-                        <i class="fa-solid fa-circle-info ct_info_icon"></i>
-                        <span class="ct_tooltip_text">Retrieve relevant memories when generating summaries for better context.</span>
-                    </span>
-                </div>
-
-                <hr class="ct_section_divider">
-
-                <!-- Token Accounting -->
-                <div class="ct_section_header">
-                    <i class="fa-solid fa-calculator"></i>
-                    <span>Token Accounting</span>
-                </div>
-                
-                <div class="ct_compact_checkbox">
-                    <input id="ct_account_qdrant_tokens" type="checkbox" checked />
-                    <label for="ct_account_qdrant_tokens">Account for Qdrant Tokens</label>
-                    <span class="ct_tooltip ct_tooltip_right">
-                        <i class="fa-solid fa-circle-info ct_info_icon"></i>
-                        <span class="ct_tooltip_text">Adjust truncation target to account for injected Qdrant memories. Prevents context overflow.</span>
-                    </span>
-                </div>
-
-                <hr class="ct_section_divider">
-
-                <!-- Advanced Settings (Collapsible) -->
-                <div class="ct_advanced_toggle" id="ct_synergy_advanced_toggle">
-                    <span><i class="fa-solid fa-cog"></i> Advanced Settings</span>
-                    <i class="fa-solid fa-chevron-down"></i>
-                </div>
-                <div class="ct_advanced_content" id="ct_synergy_advanced_content" style="display: none;">
-                    <div class="ct_compact_checkbox">
-                        <input id="ct_debug_synergy" type="checkbox" />
-                        <label for="ct_debug_synergy">Debug Mode</label>
-                        <span class="ct_tooltip ct_tooltip_right">
-                            <i class="fa-solid fa-circle-info ct_info_icon"></i>
-                            <span class="ct_tooltip_text">Enable console logging for synergy features (token accounting, summary-as-chunk)</span>
-                        </span>
-                    </div>
-                </div>
-
-            </div>
 
         </div>
     </div>

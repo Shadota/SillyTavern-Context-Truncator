@@ -5994,6 +5994,22 @@ async function index_current_chat() {
 
     debug_qdrant(`Starting chat indexing - ${chat.length} messages`);
 
+    // BUG-004 FIX: Check if collection exists and has data
+    // If collection is empty/missing, clear stale vectorized/chunked flags
+    const collectionInfo = await get_collection_info();
+    const collectionEmpty = !collectionInfo || (collectionInfo.points_count === 0);
+
+    if (collectionEmpty) {
+        debug_qdrant('Collection empty or missing - clearing stale vectorization flags');
+        for (let i = 0; i < chat.length; i++) {
+            const msg = chat[i];
+            if (get_data(msg, 'vectorized') || get_data(msg, 'chunked')) {
+                set_data(msg, 'vectorized', false);
+                set_data(msg, 'chunked', false);
+            }
+        }
+    }
+
     let processed = 0;
     let skipped = 0;
 

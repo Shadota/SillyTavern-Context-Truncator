@@ -5325,34 +5325,7 @@ async function get_collection_info() {
     }
 }
 
-// ==================== MESSAGE BUFFERING AND VECTORIZATION (V10) ====================
-
-// Add a message to the buffer for chunked vectorization or direct vectorization
-function buffer_message(index, text, isUser) {
-    if (!get_settings('qdrant_enabled')) return;
-    if (!get_settings('auto_save_memories')) return;
-    if (isUser && !get_settings('save_user_messages')) return;
-    if (!isUser && !get_settings('save_char_messages')) return;
-    
-    const ctx = getContext();
-    const message = ctx.chat[index];
-    
-    if (!message) {
-        debug_qdrant(`Message ${index} not found, skipping buffer`);
-        return;
-    }
-    
-    // Check if chunked vectorization is enabled
-    if (get_settings('enable_chunked_vectorization')) {
-        // Use V10 chunked approach
-        buffer_message_for_chunking(index, text, isUser, message);
-    } else {
-        // Fall back to per-message vectorization
-        vectorize_message(index, text, isUser);
-    }
-}
-
-// Buffer a message for chunked vectorization (V10)
+// Buffer a message for chunked vectorization
 function buffer_message_for_chunking(index, text, isUser, message) {
     // REQ-005 FIX: Ensure message hash is computed for deduplication
     if (message && message.mes && !get_data(message, 'hash')) {

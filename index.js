@@ -4754,34 +4754,39 @@ function formatDateForChunk(timestamp) {
 
 function createChunkFromBuffer() {
     if (messageBuffer.length === 0) return null;
-    
+
     const ctx = getContext();
     let chunkText = '';
     const speakers = new Set();
     const messageIds = [];
-    const currentTimestamp = Date.now();
-    
+    let oldestTimestamp = Infinity;
+
     // Build chunk text with speaker labels
     messageBuffer.forEach((msg) => {
         const speaker = msg.isUser ? getUserDisplayName() : (ctx.name2 || 'Character');
         speakers.add(speaker);
         messageIds.push(msg.messageId);
-        
+
+        // Track oldest message timestamp for proper temporal filtering
+        if (msg.timestamp && msg.timestamp < oldestTimestamp) {
+            oldestTimestamp = msg.timestamp;
+        }
+
         const line = `${speaker}: ${msg.text}\n`;
         chunkText += line;
     });
-    
+
     // Format date prefix
     let finalText = chunkText.trim();
-    const dateStr = formatDateForChunk(currentTimestamp);
+    const dateStr = formatDateForChunk(oldestTimestamp);
     finalText = `[${dateStr}]\n${finalText}`;
-    
+
     return {
         text: finalText,
         speakers: Array.from(speakers),
         messageIds: messageIds,
         messageCount: messageBuffer.length,
-        timestamp: currentTimestamp,
+        timestamp: oldestTimestamp,  // Use oldest message time, not indexing time
         chatId: ctx.chatId,
         characterName: ctx.name2 || 'Unknown'
     };
@@ -4816,7 +4821,11 @@ function buffer_message(index, text, isUser) {
     
     const ctx = getContext();
     const messageId = `${ctx.name2}_${Date.now()}_${index}`;
-    
+
+    // Get message timestamp from chat
+    const message = ctx.chat[index];
+    const msgTimestamp = message?.send_date ? normalizeTimestamp(message.send_date) : Date.now();
+
     // Check if message already in buffer
     const existingIndex = messageBuffer.findIndex((msg) => msg.messageId === messageId);
     if (existingIndex !== -1) {
@@ -4826,13 +4835,14 @@ function buffer_message(index, text, isUser) {
         }
         return;
     }
-    
+
     messageBuffer.push({
         text: text,
         characterName: ctx.name2 || 'Character',
         isUser: isUser,
         messageId: messageId,
-        index: index
+        index: index,
+        timestamp: msgTimestamp
     });
     
     lastMessageTime = Date.now();
@@ -5209,8 +5219,13 @@ async function search_standard_with_filter(collection, queryEmbedding, limit, sc
         vector: queryEmbedding,
         limit: limit,
         score_threshold: scoreThreshold,
-        with_payload: true,
-        filter: {
+        with_payload: true
+    };
+
+    // Only apply timestamp filter if threshold is meaningful
+    // This allows retrieval even with legacy data that has wrong timestamps
+    if (timestampThreshold > 0) {
+        searchBody.filter = {
             must: [
                 {
                     key: 'timestamp',
@@ -5219,8 +5234,8 @@ async function search_standard_with_filter(collection, queryEmbedding, limit, sc
                     }
                 }
             ]
-        }
-    };
+        };
+    }
 
     const response = await fetch(`${url}/collections/${collection}/points/search`, {
         method: 'POST',
@@ -5964,6 +5979,40 @@ async function delete_chunks_containing_indexes(url, collection, deletedIndexes)
     return reQueueIndexes;
 }
 
+// Check if a message hash already exists in Qdrant
+async function check_hash_exists_in_qdrant(messageHash) {
+    const url = get_settings('qdrant_url');
+    const collection = get_current_collection_name();
+    const ctx = getContext();
+
+    if (!url || !collection) return false;
+
+    try {
+        const response = await fetch(`${url}/collections/${collection}/points/scroll`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                filter: {
+                    must: [
+                        { key: 'message_hash', match: { value: messageHash } },
+                        { key: 'chat_id', match: { value: ctx.chatId } }
+                    ]
+                },
+                limit: 1,
+                with_payload: false
+            })
+        });
+
+        if (!response.ok) return false;
+
+        const data = await response.json();
+        return (data.result?.points?.length || 0) > 0;
+    } catch (e) {
+        debug_qdrant(`Hash check failed: ${e.message}`);
+        return false;
+    }
+}
+
 // Index entire current chat (matches Summarize All pattern exactly)
 async function index_current_chat() {
     // If already active, stop (toggle behavior - matches Summarize All)
@@ -5991,6 +6040,21 @@ async function index_current_chat() {
     INDEXING_ABORT_CONTROLLER = new AbortController();
 
     update_indexing_button_state('active');
+
+    // Helper for inline status updates
+    const $indexStatus = $('#ct_index_status');
+    const showIndexStatus = (message, isError = false) => {
+        $indexStatus
+            .removeClass('ct_status_success ct_status_error')
+            .addClass(isError ? 'ct_status_error' : 'ct_status_success')
+            .text(message)
+            .show();
+
+        // Auto-clear after 10 seconds
+        setTimeout(() => {
+            $indexStatus.fadeOut();
+        }, 10000);
+    };
 
     debug_qdrant(`Starting chat indexing - ${chat.length} messages`);
 
@@ -6038,6 +6102,22 @@ async function index_current_chat() {
                 continue;
             }
 
+            // REQ-001: Check Qdrant for existing hash (authoritative deduplication)
+            const messageHash = getStringHash(message.mes);
+            try {
+                const existsInQdrant = await check_hash_exists_in_qdrant(messageHash);
+                if (existsInQdrant) {
+                    // Mark local flag to avoid re-checking next time
+                    set_data(message, 'chunked', true);
+                    skipped++;
+                    debug_qdrant(`Skipping message ${i} - already in Qdrant (hash: ${messageHash})`);
+                    continue;
+                }
+            } catch (e) {
+                debug_qdrant(`Hash check error for message ${i}: ${e.message}`);
+                // Continue with indexing on error (fail-open)
+            }
+
             // Check message type settings
             if (message.is_user && !get_settings('save_user_messages')) {
                 continue;
@@ -6048,12 +6128,16 @@ async function index_current_chat() {
 
             // Add to buffer
             const messageId = `${ctx.name2}_${Date.now()}_${i}`;
+            // Get message timestamp from chat
+            const msgTimestamp = message?.send_date ? normalizeTimestamp(message.send_date) : Date.now();
+
             messageBuffer.push({
                 text: message.mes,
                 characterName: ctx.name2 || 'Character',
                 isUser: message.is_user,
                 messageId: messageId,
-                index: i
+                index: i,
+                timestamp: msgTimestamp
             });
 
             processed++;
@@ -6093,13 +6177,13 @@ async function index_current_chat() {
         debug_qdrant(`Indexing ${wasStopped ? 'stopped' : 'completed'}: ${processed} processed, ${skipped} skipped`);
 
         if (wasStopped) {
-            toastr.warning('Indexing stopped', MODULE_NAME_FANCY);
+            showIndexStatus('⚠ Indexing stopped', false);
         } else if (processed === 0 && skipped > 0) {
-            toastr.info('All messages already indexed', MODULE_NAME_FANCY);
+            showIndexStatus(`✓ All ${skipped} messages already indexed`, false);
         } else if (processed > 0) {
-            toastr.success(`Indexed ${processed} messages`, MODULE_NAME_FANCY);
+            showIndexStatus(`✓ Indexed ${processed} messages (${skipped} skipped)`, false);
         } else {
-            toastr.info('No messages to index', MODULE_NAME_FANCY);
+            showIndexStatus('ℹ No messages to index', false);
         }
 
     } catch (e) {

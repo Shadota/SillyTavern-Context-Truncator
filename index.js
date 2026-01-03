@@ -1464,13 +1464,14 @@ function update_status_display() {
         // V34 BUG-002 FIX: Defensive save after correction factor update
         // Ensures factor is persisted immediately after being learned
         save_truncation_index();
-    }
 
-    // V33: Update learned non-chat ratio for future fallback
-    if (actualSize > 0 && actualNonChatTokens > 0) {
-        LAST_KNOWN_NON_CHAT_RATIO = actualNonChatTokens / actualSize;
-        // Clamp to reasonable bounds (20% - 60%)
-        LAST_KNOWN_NON_CHAT_RATIO = Math.max(0.20, Math.min(0.60, LAST_KNOWN_NON_CHAT_RATIO));
+        // V33: Update learned non-chat ratio for future fallback
+        // NOTE: Must be inside this block because actualNonChatTokens is defined here
+        if (actualSize > 0 && actualNonChatTokens > 0) {
+            LAST_KNOWN_NON_CHAT_RATIO = actualNonChatTokens / actualSize;
+            // Clamp to reasonable bounds (20% - 60%)
+            LAST_KNOWN_NON_CHAT_RATIO = Math.max(0.20, Math.min(0.60, LAST_KNOWN_NON_CHAT_RATIO));
+        }
     }
     
     // Determine color based on error percentage

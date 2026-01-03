@@ -26,7 +26,6 @@ CacheGuard automatically:
 ## Quick Start
 
 1. **Enable Context Truncator** in the Truncation tab
-2. Set your **Target Size** (or enable Auto-Calibration)
 3. Optionally configure **Auto-Summarize** with an OpenAI-compatible endpoint
 4. For vector memory, configure **Qdrant** connection in the Qdrant Memory tab
 

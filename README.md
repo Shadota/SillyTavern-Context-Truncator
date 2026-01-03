@@ -30,16 +30,6 @@ CacheGuard automatically:
 3. For vector memory, configure **Qdrant** connection in the Qdrant Memory tab.
 4. LoreVault simply has to be enabled in it's own extensions' settings.
 
-## Configuration Overview
-
-| Setting | Description | Default |
-|---------|-------------|---------|
-| Target Size | Token limit before truncation kicks in | 8000 |
-| Auto-Calibrate | Automatically tune target based on actual usage | On |
-| Target Utilization | Percentage of max context to use | 80% |
-| Auto-Summarize | Generate summaries for truncated messages | Off |
-| Qdrant Memory | Enable vector-based memory retrieval | Off |
-
 ## Credits & Acknowledgments
 
 This extension builds upon excellent prior work:

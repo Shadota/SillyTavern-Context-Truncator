@@ -815,16 +815,16 @@ function calculate_truncation_index() {
     const chat = ctx.chat;
     let targetSize = get_settings('target_context_size');
 
+    const batchSize = get_settings('batch_size');
+    const minKeep = get_settings('min_messages_to_keep');
+    const maxContext = getMaxContextSize();
+
     // V33: Defensive cap - never exceed 90% of max context regardless of settings
     const maxSafeContext = Math.floor(maxContext * 0.90);
     if (targetSize > maxSafeContext) {
         debug_trunc(`Target ${targetSize} exceeds safe limit, capping to ${maxSafeContext}`);
         targetSize = maxSafeContext;
     }
-
-    const batchSize = get_settings('batch_size');
-    const minKeep = get_settings('min_messages_to_keep');
-    const maxContext = getMaxContextSize();
     
     
     // SYNERGY: Account for Qdrant tokens in target size

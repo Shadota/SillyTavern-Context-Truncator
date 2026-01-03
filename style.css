@@ -551,6 +551,10 @@
     background: #ce93d8; /* Purple - user approved */
 }
 
+.ct_breakdown_lorevault {
+    background-color: #DDA0DD; /* Pastel purple (Plum) */
+}
+
 .ct_breakdown_free {
     background: #5a5a5a; /* Gray - user approved */
 }

@@ -1,237 +1,61 @@
-# SillyTavern Context Truncator with Summarization
+# CacheGuard - Smart Context Management for SillyTavern
 
-Intelligent context management with AI-powered summarization and batch-based truncation to prevent cache invalidation when using LLMs with caching support.
+**Never lose your story's continuity again.** CacheGuard intelligently manages your context window by summarizing old messages and retrieving relevant memories exactly when you need them.
 
-> **⚠️ Disclaimer:** This extension is created by a vibe coder, not a professional programmer. Use at your own risk and expect occasional quirks!
+## The Problem
 
-## Credits
+Large language models have limited context windows. In long roleplay sessions, older messages get silently dropped, causing characters to "forget" important events, relationships, and plot points. This breaks immersion and forces constant manual recaps.
 
-This extension builds upon [**Qvink Memory (MessageSummarize)**](https://github.com/qvink/SillyTavern-MessageSummarize) by **Qvink**. The following components are adapted from their work:
-- AI summarization system with connection profile support
-- Token-based truncation calculation methods
-- Message interception and IGNORE_SYMBOL handling
+## The Solution
 
-This extension simplifies and focuses on context truncation with optional summarization, while MessageSummarize offers a full-featured memory management system.
-
-## Compatibility
-
-**Tested and compatible with:**
-- [**Qdrant Memory (Shadota's Fork)**](https://github.com/Shadota/st-qdrant-memory) - Vector-based memory retrieval
-  - Original by [**Bronya-Rand**](https://github.com/Bronya-Rand/st-qdrant-memory)
-  - This extension safely handles Qdrant's chat modifications
-
-## TODO
-
-Future improvements planned:
-- [ ] Fine-tune token calculation methods for better accuracy
-- [ ] Add progress indicator for summarization operations
-- [ ] Add UI indicators on summarized and hidden messages
-- [ ] Integrate Qdrant functionality from personal fork
-
-## Support
-
-Questions or issues? Reach out:
-- **Discord:** @SunnyBeyond
-- **GitHub:** [Open an issue](https://github.com/Shadota/SillyTavern-Context-Truncator/issues)
-
-## Purpose
-
-When using LLMs with caching (like Claude), removing messages one-by-one invalidates the cache on every generation, causing slower responses and higher costs. This extension intelligently manages context by:
-
-1. **Summarizing** older messages using AI to preserve narrative continuity
-2. **Truncating** in fixed batches to minimize cache invalidation
-3. **Targeting** a specific context size for predictable behavior
-
-## How It Works
-
-1. **Monitors** the previous prompt size using SillyTavern's raw context API
-2. **Detects** when the context exceeds your target size
-3. **Summarizes** older messages using AI (optional but recommended)
-4. **Removes** N messages at once (batch truncation) from active context
-5. **Injects** summaries as extension prompts to maintain narrative continuity
-6. **Learns** from each generation to improve accuracy over time
-7. **Preserves** a minimum number of recent messages for safety
-8. **Displays** real-time accuracy metrics with color-coded feedback
-
-## Installation
-
-1. Open SillyTavern
-2. Go to **Extensions** > **Install Extension**
-3. Enter: `https://github.com/Shadota/SillyTavern-Context-Truncator`
-4. Click **Install**
-
-## Configuration
-
-### Core Settings
-
-- **Enable Extension**: Toggle the extension on/off
-- **Target Context Size**: The target size (in tokens) to maintain (default: 42000)
-- **Batch Size**: Number of messages to remove per batch (default: 20)
-- **Min Messages to Keep**: Safety limit - never go below this many messages (default: 10)
-
-### Summarization Settings
-
-- **Enable Summarization**: Toggle AI summarization on/off (recommended)
-- **Connection Profile**: Choose a different model for summarization (optional)
-  - Select "Same as Current" to use your main model
-  - Select a different profile to enable **background summarization** while roleplaying
-  - Allows using a faster/cheaper model for summaries while using a premium model for roleplay
-- **Maximum Words per Summary**: Word limit for each summary (default: 50)
-- **Summary Prompt**: Custom prompt for the AI summarizer (uses character's persona)
-- **Summary Position**: Where to inject summaries (After Main Prompt, After Character Definitions, etc.)
-- **Summary Depth**: How many messages to include per summary (default: 1)
-- **Auto-Summarize**: Automatically summarize when new messages arrive
-
-### Advanced Settings
-
-- **Debug Mode**: Enable detailed logging to browser console
-- **Streaming**: Enable streaming for summary generation
-
-### Status Display
-
-After each generation, the extension displays:
-- **Actual**: The actual prompt size in tokens
-- **Target**: Your configured target size
-- **Difference**: How many tokens over/under target
-- **Error**: Percentage error from target
-
-**Color Coding:**
-- 🟢 **Green**: Within 5% of target (excellent accuracy)
-- 🟡 **Yellow**: Within 20% of target (good accuracy)
-- 🔴 **Red**: Over 20% from target (needs adjustment)
-
-### Controls
-
-- **Reset Truncation**: Resets the truncation index and clears summaries
-
-## Example Scenario
-
-**Setup:**
-- Target context: 45000 tokens
-- Batch size: 20 messages
-- Min keep: 10 messages
-- Summarization: Enabled
-- Chat has 400+ messages
-
-**Execution:**
-1. **Generation 1** (Initial Learning):
-   - Actual: 35932 tokens
-   - Target: 45000 tokens
-   - Error: 20.2% (under target) 🔴
-   - System learns correction factor: 0.898
-
-2. **Generation 2** (Adapting):
-   - Actual: 37730 tokens
-   - Target: 45000 tokens
-   - Error: 16.2% (under target) 🟡
-   - System refines correction factor: 0.826
-
-3. **Generation 3** (Converging):
-   - Actual: 39381 tokens
-   - Target: 45000 tokens
-   - Error: 12.5% (under target) 🟡
-   - Correction factor stabilizes
-
-4. **Generation 4+** (Stable):
-   - Actual: 39771 tokens
-   - Target: 45000 tokens
-   - Error: 11.6% (under target) 🟡
-   - **Cache preserved!** ✓
-
-**Status Display Example:**
-```
-Last Generation:
-Actual: 39,771 tokens
-Target: 45,000 tokens
-Difference: -5,229 tokens
-Error: 11.6%
-```
-(Displayed in yellow background)
-
-**Note:** The extension learns and improves accuracy over 2-3 generations. First generation uses estimates and may be less accurate.
+CacheGuard automatically:
+- **Truncates old messages** at a configurable threshold while preserving recent context
+- **Summarizes excluded messages** into compact notes that maintain story continuity
+- **Retrieves semantically relevant memories** from your conversation history using vector search
+- **Auto-calibrates** to optimally fill your context window without overflowing
 
 ## Key Features
 
-- **Adaptive Learning**: Learns from each generation to improve accuracy over time
-- **Narrative Continuity**: AI summaries preserve story context even after truncation
-- **Background Summarization**: Use a different model for summaries while roleplaying
-- **Cache Efficiency**: 20x fewer cache invalidations (removing 20 at once vs 1 at a time)
-- **Predictable Behavior**: Always removes fixed batches, not variable amounts
-- **Real-time Feedback**: Color-coded status display shows actual vs target with accuracy metrics
-- **Safety**: Minimum message setting prevents over-truncation
-- **Automatic**: Works seamlessly in the background
-- **Flexible**: Can be used with or without summarization
+🎯 **Smart Truncation** - Automatically removes old messages while keeping a configurable number of recent ones  
+📝 **Auto-Summarization** - Generates concise summaries of excluded messages using your preferred LLM endpoint  
+🧠 **Vector Memory** - Qdrant-powered semantic search retrieves relevant past events when contextually appropriate  
+📊 **Visual Dashboard** - Real-time context utilization gauge and breakdown by category  
+⚙️ **Auto-Calibration** - Self-tuning algorithm learns your optimal context size over a few generations  
+🔌 **LoreVault Compatible** - Automatically tracks LoreVault memory tokens in the context breakdown
 
-## Background Summarization
+## Installation
 
-The extension supports using a different model for summarization than your main roleplay model. This enables:
+1. Download or clone this repository
+2. Place the folder in your SillyTavern `data/default-user/extensions/` directory
+3. Restart SillyTavern
+4. Enable "CacheGuard" in Extensions
 
-- **Cost Optimization**: Use a cheaper model (e.g., GPT-4o-mini) for summaries while using a premium model (e.g., Claude Opus) for roleplay
-- **Speed**: Use a faster model for summaries to reduce wait time
-- **Independence**: Summarize in the background without interrupting your main conversation
+## Quick Start
 
-**How to use:**
-1. Set up multiple connection profiles in SillyTavern's Connection Manager
-2. In the extension settings, select a different profile for "Connection Profile"
-3. The extension will automatically switch to that profile when summarizing
-4. Your main roleplay will continue using your primary profile
+1. **Enable Context Truncator** in the Truncation tab
+2. Set your **Target Size** (or enable Auto-Calibration)
+3. Optionally configure **Auto-Summarize** with an OpenAI-compatible endpoint
+4. For vector memory, configure **Qdrant** connection in the Qdrant Memory tab
 
-**Example Setup:**
-- Main Profile: Claude Opus (for high-quality roleplay)
-- Summary Profile: GPT-4o-mini (for fast, cheap summaries)
-- Result: Best of both worlds - premium roleplay with efficient summarization
+## Configuration Overview
 
-## Performance
+| Setting | Description | Default |
+|---------|-------------|---------|
+| Target Size | Token limit before truncation kicks in | 8000 |
+| Auto-Calibrate | Automatically tune target based on actual usage | Off |
+| Target Utilization | Percentage of max context to use | 80% |
+| Auto-Summarize | Generate summaries for truncated messages | On |
+| Qdrant Memory | Enable vector-based memory retrieval | Off |
 
-- **First Generation**: ~20% error (learning phase)
-- **Second Generation**: ~15% error (adapting)
-- **Third+ Generations**: ~10-12% error (stable)
-- **Cache Preservation**: Maintained after convergence
+## Credits & Acknowledgments
 
-## Requirements
+This extension builds upon excellent prior work:
 
-- SillyTavern v1.14.0 or higher
+- **[st-qdrant-memory](https://github.com/HO-git/st-qdrant-memory)** by HO-git - Vector memory architecture and Qdrant integration patterns
+- **[SillyTavern-MessageSummarize](https://github.com/qvink/SillyTavern-MessageSummarize)** by Qvink - Summarization system design and message processing logic
 
-## Troubleshooting
-
-### Extension not loading
-- Make sure you're on SillyTavern v1.14.0 or higher
-- Check browser console (F12) for errors
-- Try reloading the page
-
-### Truncation not working
-- Enable **Debug Mode** in settings
-- Check browser console for debug logs
-- Verify **Enable Extension** is checked
-- Check that **Target Context Size** is set appropriately
-- Ensure you have at least one generation after enabling
-
-### Status display not showing
-- Wait for a message to be generated first
-- The display only appears after the first generation
-- Check that the extension is enabled
-
-### Accuracy issues (high error percentage)
-- **First generation is always less accurate** (~20% error) as the system learns
-- **Accuracy improves over 2-3 generations** as the adaptive system converges
-- **Typical stable accuracy**: 10-15% error (conservative, under target)
-- Batch size affects accuracy - smaller batches = more precise but more cache invalidations
-- Click "Reset Truncation" to restart the learning process if needed
-
-### Summarization not working
-- Verify **Enable Summarization** is checked
-- Check that you have an active AI connection
-- Enable **Debug Mode** to see summary generation logs
-- Ensure **Summary Prompt** is not empty
+Their open-source contributions made this extension possible. 🙏
 
 ## License
 
-MIT License - See LICENSE file for details
-
-## Author
-
-Shadota
-
-## Contributing
-
-Issues and pull requests welcome at: https://github.com/Shadota/SillyTavern-Context-Truncator
+MIT License - See [LICENSE](LICENSE) for details.

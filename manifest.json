@@ -1,5 +1,5 @@
 {
-  "display_name": "Enhanced Memory (Truncation + Qdrant)",
+  "display_name": "CacheGuard",
   "loading_order": 100,
   "requires": [],
   "optional": [],

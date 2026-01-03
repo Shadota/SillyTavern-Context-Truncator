@@ -32,7 +32,7 @@ export { MODULE_NAME };
 
 // Module constants
 const MODULE_NAME = 'context_truncator';
-const MODULE_NAME_FANCY = 'Enhanced Memory';
+const MODULE_NAME_FANCY = 'CacheGuard';
 
 // Default settings
 const default_settings = {
@@ -1782,7 +1782,8 @@ function update_calibration_ui() {
             break;
         case 'CALIBRATING':
             $phase.text('Calibrating').addClass('ct_phase_calibrating');
-            $progress.text(`${STABLE_COUNT}/${STABLE_THRESHOLD} stable`);
+            // Training is complete in CALIBRATING phase, show checkmark
+            $progress.text(`${TRAINING_GENERATIONS}/${TRAINING_GENERATIONS} ✓`);
             break;
         case 'RETRAINING':
             $phase.text('Retraining').addClass('ct_phase_retraining');
@@ -1834,26 +1835,44 @@ function update_stability_ui() {
 // World Rules are bounded by "## Lore:" and "## [AnyName]'s Persona:" (flexible matching)
 function calculate_world_rules_tokens(raw_prompt) {
     if (!raw_prompt) return 0;
-    
+
     // Use flexible regex patterns to handle variations in spacing/formatting
     const lorePattern = /##\s*Lore:/i;
     // Match any name followed by "'s Persona:" - the name is replaced from {{user}} placeholder
     const personaPattern = /##\s*.+?'s Persona:/i;
-    
+
     const loreMatch = raw_prompt.match(lorePattern);
     if (!loreMatch) return 0;
-    
+
     const startIndex = loreMatch.index;
-    
+
     // Search for persona marker after the lore marker
     const afterLore = raw_prompt.substring(startIndex);
     const personaMatch = afterLore.match(personaPattern);
     if (!personaMatch) return 0;
-    
+
     const endIndex = startIndex + personaMatch.index;
-    
+
     const worldRulesSection = raw_prompt.substring(startIndex, endIndex);
     return count_tokens(worldRulesSection);
+}
+
+// Calculate LoreVault tokens from raw prompt
+// LoreVault content is bounded by [STORY MEMORY] and [/STORY MEMORY]
+function calculate_lorevault_tokens(raw_prompt) {
+    if (!raw_prompt) return 0;
+
+    const startMarker = '[STORY MEMORY]';
+    const endMarker = '[/STORY MEMORY]';
+
+    const startIndex = raw_prompt.indexOf(startMarker);
+    if (startIndex === -1) return 0;
+
+    const endIndex = raw_prompt.indexOf(endMarker, startIndex);
+    if (endIndex === -1) return 0;
+
+    const content = raw_prompt.substring(startIndex, endIndex + endMarker.length);
+    return count_tokens(content);
 }
 
 // Update the Overview tab with current stats
@@ -1937,10 +1956,11 @@ function update_overview_tab() {
         const segments = get_prompt_chat_segments_from_raw(last_raw_prompt);
         const chatTokens = segments ? segments.reduce((sum, seg) => sum + seg.tokenCount, 0) : 0;
         const worldRulesTokens = calculate_world_rules_tokens(last_raw_prompt);
+        const lorevaultTokens = calculate_lorevault_tokens(last_raw_prompt);
         const summaryTokens = count_tokens(get_summary_injection());
         const qdrantTokens = get_qdrant_injection_tokens();
-        // System is everything else (total - chat - worldRules - summaries - qdrant)
-        const systemTokens = Math.max(0, actualSize - chatTokens - worldRulesTokens - summaryTokens - qdrantTokens);
+        // System is everything else (total - chat - worldRules - lorevault - summaries - qdrant)
+        const systemTokens = Math.max(0, actualSize - chatTokens - worldRulesTokens - lorevaultTokens - summaryTokens - qdrantTokens);
         
         // Use corrected values for breakdown so it matches the gauge
         const correctedChatTokens = Math.floor(chatTokens * CHAT_TOKEN_CORRECTION_FACTOR);
@@ -1948,10 +1968,11 @@ function update_overview_tab() {
         // NOTE: Summary and Qdrant tokens are already counted separately and don't need correction
         const correctedActualSize = Math.floor(actualSize * CHAT_TOKEN_CORRECTION_FACTOR);
         const freeTokens = Math.max(0, maxContext - correctedActualSize);
-        
+
         const chatPct = (correctedChatTokens / maxContext * 100);
         const systemPct = (correctedSystemTokens / maxContext * 100);
         const worldRulesPct = (worldRulesTokens / maxContext * 100);
+        const lorevaultPct = (lorevaultTokens / maxContext * 100);
         const summaryPct = (summaryTokens / maxContext * 100);
         const qdrantPct = (qdrantTokens / maxContext * 100);
         const freePct = (freeTokens / maxContext * 100);
@@ -1959,6 +1980,7 @@ function update_overview_tab() {
         $('#ct_breakdown_chat').css('width', `${chatPct}%`);
         $('#ct_breakdown_system').css('width', `${systemPct}%`);
         $('#ct_breakdown_worldrules').css('width', `${worldRulesPct}%`);
+        $('#ct_breakdown_lorevault').css('width', `${lorevaultPct}%`);
         $('#ct_breakdown_summaries').css('width', `${summaryPct}%`);
         $('#ct_breakdown_qdrant').css('width', `${qdrantPct}%`);
         $('#ct_breakdown_free').css('width', `${freePct}%`);
@@ -1967,6 +1989,7 @@ function update_overview_tab() {
         $('#ct_breakdown_chat_tokens').text(`${correctedChatTokens.toLocaleString()} tokens`);
         $('#ct_breakdown_system_tokens').text(`${correctedSystemTokens.toLocaleString()} tokens`);
         $('#ct_breakdown_worldrules_tokens').text(`${worldRulesTokens.toLocaleString()} tokens`);
+        $('#ct_breakdown_lorevault_tokens').text(`${lorevaultTokens.toLocaleString()} tokens`);
         $('#ct_breakdown_summaries_tokens').text(`${summaryTokens.toLocaleString()} tokens`);
         $('#ct_breakdown_qdrant_tokens').text(`${qdrantTokens.toLocaleString()} tokens`);
         $('#ct_breakdown_free_tokens').text(`${freeTokens.toLocaleString()} tokens`);
@@ -2035,7 +2058,8 @@ function update_overview_tab() {
             case 'CALIBRATING':
                 phaseText = 'Calibrating';
                 phaseClass = 'ct_phase_calibrating';
-                progressText = `${STABLE_COUNT}/${STABLE_THRESHOLD} stable`;
+                // Training is complete in CALIBRATING phase, show checkmark
+                progressText = `${TRAINING_GENERATIONS}/${TRAINING_GENERATIONS} ✓`;
                 break;
             case 'RETRAINING':
                 phaseText = 'Retraining';
@@ -3594,7 +3618,7 @@ function register_event_listeners() {
             // Refresh Qdrant memories and vector statistics after each message
             if (get_settings('qdrant_enabled')) {
                 try {
-                    await refresh_qdrant_memories();
+                    await refresh_qdrant_memories(false);
                 } catch (e) {
                     debug_qdrant('Failed to refresh Qdrant memories (CHARACTER_MESSAGE_RENDERED handler):', e);
                     try { toastr.error(`Failed to refresh Qdrant memories: ${e.message || String(e)}`, MODULE_NAME_FANCY); } catch (t) { }
@@ -3634,7 +3658,7 @@ function register_event_listeners() {
             // Refresh Qdrant memories and vector statistics after each message
             if (get_settings('qdrant_enabled')) {
                 try {
-                    await refresh_qdrant_memories();
+                    await refresh_qdrant_memories(false);
                 } catch (e) {
                     debug_qdrant('Failed to refresh Qdrant memories (USER_MESSAGE_RENDERED handler):', e);
                     try { toastr.error(`Failed to refresh Qdrant memories: ${e.message || String(e)}`, MODULE_NAME_FANCY); } catch (t) { }
@@ -6291,7 +6315,7 @@ let CURRENT_QDRANT_INJECTION = '';
 let INJECTED_QDRANT_MEMORIES = [];  // Memories that were actually injected (for display)
 
 // Refresh Qdrant memories (called before generation)
-async function refresh_qdrant_memories() {
+async function refresh_qdrant_memories(updateDisplayMemories = true) {
     if (!get_settings('qdrant_enabled')) {
         CURRENT_QDRANT_MEMORIES = [];
         CURRENT_QDRANT_INJECTION = '';
@@ -6303,7 +6327,9 @@ async function refresh_qdrant_memories() {
         CURRENT_QDRANT_INJECTION = format_memories_for_injection(CURRENT_QDRANT_MEMORIES);
 
         // Store a copy for display (so UI shows what was actually injected, not post-refresh results)
-        INJECTED_QDRANT_MEMORIES = [...CURRENT_QDRANT_MEMORIES];
+        if (updateDisplayMemories) {
+            INJECTED_QDRANT_MEMORIES = [...CURRENT_QDRANT_MEMORIES];
+        }
         
         // Inject memories into context
         const ctx = getContext();

@@ -166,6 +166,7 @@ let CALIBRATION_STATE = 'WAITING';
 let GENERATION_COUNT = 0;      // Generations in current phase
 let STABLE_COUNT = 0;          // Consecutive stable generations
 let RETRAIN_COUNT = 0;         // Generations in retraining phase
+let LAST_STABLE_CHAT_LENGTH = 0;  // Chat length when entering STABLE state
 const TRAINING_GENERATIONS = 2;  // Generations needed to train correction factor (reduced from 3)
 const STABLE_THRESHOLD = 5;      // Consecutive stable gens to reach STABLE state
 
@@ -596,6 +597,7 @@ function load_truncation_index() {
         STABLE_COUNT = chat_metadata[MODULE_NAME].stable_count || 0;
         RETRAIN_COUNT = chat_metadata[MODULE_NAME].retrain_count || 0;
         QDRANT_TOKEN_HISTORY = chat_metadata[MODULE_NAME].qdrant_token_history || [];
+        LAST_STABLE_CHAT_LENGTH = chat_metadata[MODULE_NAME].last_stable_chat_length || 0;
         debug(`Loaded calibration state: ${CALIBRATION_STATE}, stable: ${STABLE_COUNT}/${STABLE_THRESHOLD}`);
     } else {
         // V32 FIX: If correction_factor was loaded but calibration_state wasn't,
@@ -632,7 +634,8 @@ function save_truncation_index() {
     chat_metadata[MODULE_NAME].stable_count = STABLE_COUNT;
     chat_metadata[MODULE_NAME].retrain_count = RETRAIN_COUNT;
     chat_metadata[MODULE_NAME].qdrant_token_history = QDRANT_TOKEN_HISTORY;
-    
+    chat_metadata[MODULE_NAME].last_stable_chat_length = LAST_STABLE_CHAT_LENGTH;
+
     debug(`Saved truncation index: ${TRUNCATION_INDEX}, correction factor: ${CHAT_TOKEN_CORRECTION_FACTOR.toFixed(3)}, state: ${CALIBRATION_STATE}`);
     saveMetadataDebounced();
 }
@@ -811,6 +814,14 @@ function calculate_truncation_index() {
     const ctx = getContext();
     const chat = ctx.chat;
     let targetSize = get_settings('target_context_size');
+
+    // V33: Defensive cap - never exceed 90% of max context regardless of settings
+    const maxSafeContext = Math.floor(maxContext * 0.90);
+    if (targetSize > maxSafeContext) {
+        debug_trunc(`Target ${targetSize} exceeds safe limit, capping to ${maxSafeContext}`);
+        targetSize = maxSafeContext;
+    }
+
     const batchSize = get_settings('batch_size');
     const minKeep = get_settings('min_messages_to_keep');
     const maxContext = getMaxContextSize();
@@ -885,10 +896,9 @@ function calculate_truncation_index() {
     
     
     if (!last_raw_prompt) {
-        // No raw prompt - estimate non-chat budget as 15% of current prompt size
-        // This is a rough estimate for the first generation only
-        nonChatBudget = Math.floor(currentPromptSize * 0.15);
-        debug_trunc(`  No raw prompt available - using 15% estimate`);
+        // V33: Use learned ratio from previous generations (more accurate than fixed 40%)
+        nonChatBudget = Math.floor(currentPromptSize * LAST_KNOWN_NON_CHAT_RATIO);
+        debug_trunc(`  No raw prompt available - using ${LAST_KNOWN_NON_CHAT_RATIO * 100}% learned ratio`);
         debug_trunc(`  Non-chat budget (estimated): ${nonChatBudget} tokens`);
     } else {
         // Have raw prompt - calculate accurately
@@ -1127,10 +1137,26 @@ function update_message_inclusion_flags() {
         TRUNCATION_INDEX = null;
     }
     
-    // V26: ALWAYS recalculate truncation index on each refresh
-    // This ensures we both ADD truncation when over target AND REMOVE truncation when under target
-    TRUNCATION_INDEX = calculate_truncation_index();
-    save_truncation_index();
+    // V33 BUG-002 FIX: In STABLE state, only recalculate if new messages were added
+    const chatLength = ctx.chat?.length || 0;
+
+    if (CALIBRATION_STATE === 'STABLE' && LAST_STABLE_CHAT_LENGTH > 0) {
+        const newMessages = chatLength - LAST_STABLE_CHAT_LENGTH;
+
+        if (newMessages <= 0) {
+            // No new messages - keep cached truncation index for cache stability
+            debug_trunc(`STABLE: No new messages, keeping TRUNCATION_INDEX at ${TRUNCATION_INDEX}`);
+        } else {
+            // New messages added - recalculate and update tracking
+            debug_trunc(`STABLE: ${newMessages} new message(s), recalculating truncation`);
+            TRUNCATION_INDEX = calculate_truncation_index();
+            LAST_STABLE_CHAT_LENGTH = chatLength;
+        }
+    } else {
+        // Not in STABLE or first entry - always recalculate
+        TRUNCATION_INDEX = calculate_truncation_index();
+        save_truncation_index();
+    }
     
     // Sanity check: ensure truncation index doesn't exceed chat length
     if (TRUNCATION_INDEX > chat.length) {
@@ -1286,6 +1312,7 @@ let LAST_PREDICTED_SIZE = 0;
 let LAST_PREDICTED_CHAT_SIZE = 0;
 let LAST_PREDICTED_CHAT_SIZE_RAW = 0;  // V29: Uncorrected value for factor calculation
 let LAST_PREDICTED_NON_CHAT_SIZE = 0;
+let LAST_KNOWN_NON_CHAT_RATIO = 0.40;  // V33: Learned ratio, starts at 40%
 
 // Cache for valid Overview tab data to prevent wild utilization swings
 let LAST_VALID_UTILIZATION = null;
@@ -1396,7 +1423,11 @@ function update_status_display() {
     const percentError = targetSize > 0 ? Math.abs((difference / targetSize) * 100) : 0;
     
     // Calculate and apply adaptive correction factor
-    if (LAST_PREDICTED_SIZE > 0 && LAST_PREDICTED_CHAT_SIZE > 0) {
+    // V33: Skip factor update in STABLE, or when prediction is already very accurate (<1% error)
+    const predictionError = Math.abs(actualSize - LAST_PREDICTED_SIZE) / LAST_PREDICTED_SIZE;
+    const skipFactorUpdate = CALIBRATION_STATE === 'STABLE' || predictionError < 0.01;
+
+    if (LAST_PREDICTED_SIZE > 0 && LAST_PREDICTED_CHAT_SIZE > 0 && !skipFactorUpdate) {
         // Analyze actual chat vs non-chat from current prompt
         const segments = get_prompt_chat_segments_from_raw(last_raw_prompt);
         const actualChatTokens = segments ? segments.reduce((sum, seg) => sum + seg.tokenCount, 0) : 0;
@@ -1407,11 +1438,11 @@ function update_status_display() {
         const newCorrectionFactor = actualChatTokens / LAST_PREDICTED_CHAT_SIZE_RAW;
         const oldCorrectionFactor = CHAT_TOKEN_CORRECTION_FACTOR;
         
-        // V32 FIX: Adaptive smoothing weight based on prediction error
-        // Faster convergence when error is large (>20%), more stable when error is small
+        // V33: Use higher weight on first measurement (faster initial convergence)
         const predictedChat = LAST_PREDICTED_CHAT_SIZE;
         const errorPercent = Math.abs(predictedChat - actualChatTokens) / actualChatTokens;
-        const newWeight = errorPercent > 0.20 ? 0.60 : 0.40; // Faster convergence for large errors
+        const isFirstMeasurement = GENERATION_COUNT === 1 && CALIBRATION_STATE === 'INITIAL_TRAINING';
+        const newWeight = isFirstMeasurement ? 0.80 : (errorPercent > 0.20 ? 0.60 : 0.40);
         
         // Smooth the correction factor using adaptive weight
         CHAT_TOKEN_CORRECTION_FACTOR = (newWeight * newCorrectionFactor) + ((1 - newWeight) * oldCorrectionFactor);
@@ -1433,6 +1464,13 @@ function update_status_display() {
         // V34 BUG-002 FIX: Defensive save after correction factor update
         // Ensures factor is persisted immediately after being learned
         save_truncation_index();
+    }
+
+    // V33: Update learned non-chat ratio for future fallback
+    if (actualSize > 0 && actualNonChatTokens > 0) {
+        LAST_KNOWN_NON_CHAT_RATIO = actualNonChatTokens / actualSize;
+        // Clamp to reasonable bounds (20% - 60%)
+        LAST_KNOWN_NON_CHAT_RATIO = Math.max(0.20, Math.min(0.60, LAST_KNOWN_NON_CHAT_RATIO));
     }
     
     // Determine color based on error percentage
@@ -1515,7 +1553,8 @@ function reset_calibration() {
     STABLE_COUNT = 0;
     RETRAIN_COUNT = 0;
     CHAT_TOKEN_CORRECTION_FACTOR = 1.0;
-    
+    LAST_STABLE_CHAT_LENGTH = 0;  // V33: Clear STABLE tracking
+
     debug('Calibration reset to WAITING');
     update_calibration_ui();
     
@@ -1595,6 +1634,9 @@ function calibrate_target_size(actualSize) {
                 
                 if (STABLE_COUNT >= STABLE_THRESHOLD) {
                     CALIBRATION_STATE = 'STABLE';
+                    // V33: Track chat length for STABLE state locking
+                    LAST_STABLE_CHAT_LENGTH = getContext().chat?.length || 0;
+                    debug_trunc(`Entering STABLE state with ${LAST_STABLE_CHAT_LENGTH} messages`);
                     toastr.success(`Calibration complete! Target: ${get_settings('target_context_size').toLocaleString()} tokens`, MODULE_NAME_FANCY);
                 }
             } else {
@@ -1628,6 +1670,7 @@ function calibrate_target_size(actualSize) {
                 CALIBRATION_STATE = 'RETRAINING';
                 RETRAIN_COUNT = 0;
                 STABLE_COUNT = 0;
+                LAST_STABLE_CHAT_LENGTH = 0;  // V33: Clear STABLE tracking
                 toastr.warning('Calibration destabilized - retraining...', MODULE_NAME_FANCY);
             }
             break;

@@ -1,6 +1,6 @@
 # CacheGuard - Smart Context Management for SillyTavern
 
-**Never lose your story's continuity again.** CacheGuard intelligently manages your context window by summarizing old messages and retrieving relevant memories exactly when you need them.
+**Never lose your story's continuity again.** CacheGuard intelligently manages your context window to make sure your long roleplays will last with minimal performance impact!
 
 ## The Problem
 

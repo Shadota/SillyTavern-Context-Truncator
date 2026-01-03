@@ -1572,7 +1572,7 @@ function calibrate_target_size(actualSize) {
                 // Transition to INITIAL_TRAINING
                 CALIBRATION_STATE = 'INITIAL_TRAINING';
                 GENERATION_COUNT = 0;
-                toastr.info('Context threshold reached - starting calibration training', MODULE_NAME_FANCY);
+                // REQ-003: Removed threshold popup - state transition is silent
             }
             break;
             
@@ -1773,16 +1773,11 @@ function update_calibration_ui() {
     switch (CALIBRATION_STATE) {
         case 'WAITING':
             $phase.text('Waiting').addClass('ct_phase_waiting');
-            // V34 BUG-003 FIX: Show truncation status instead of confusing token numbers
-            const truncationActive = TRUNCATION_INDEX !== null && TRUNCATION_INDEX > 0;
-            if (truncationActive) {
-                $progress.text(`Truncation active (${TRUNCATION_INDEX} excluded)`);
-            } else {
-                $progress.text(`${LAST_ACTUAL_PROMPT_SIZE.toLocaleString()} / ${startThreshold.toLocaleString()} tokens`);
-            }
+            // REQ-004: Always show 0/TRAINING_GENERATIONS format in WAITING state
+            $progress.text(`0/${TRAINING_GENERATIONS}`);
             break;
         case 'INITIAL_TRAINING':
-            $phase.text('Initial Training').addClass('ct_phase_training');
+            $phase.text('Training').addClass('ct_phase_training');
             $progress.text(`${GENERATION_COUNT}/${TRAINING_GENERATIONS} generations`);
             break;
         case 'CALIBRATING':
@@ -1819,7 +1814,7 @@ function update_stability_ui() {
     
     if ($stableCount.length === 0) return;
     
-    const requiredStable = 3; // Matches STABLE_THRESHOLD constant
+    const requiredStable = STABLE_THRESHOLD; // Use actual constant (5)
     const countText = `${STABLE_COUNT}/${requiredStable}`;
     $stableCount.text(countText);
     
@@ -2029,18 +2024,11 @@ function update_overview_tab() {
             case 'WAITING':
                 phaseText = 'Waiting';
                 phaseClass = 'ct_phase_waiting';
-                // V34 BUG-001 FIX: Show truncation status in WAITING phase
-                const truncationActive = TRUNCATION_INDEX !== null && TRUNCATION_INDEX > 0;
-                if (truncationActive) {
-                    progressText = `Truncation active (${TRUNCATION_INDEX} excluded)`;
-                } else if (LAST_ACTUAL_PROMPT_SIZE > 0) {
-                    progressText = `${LAST_ACTUAL_PROMPT_SIZE.toLocaleString()} / ${startThreshold.toLocaleString()}`;
-                } else {
-                    progressText = '0/2';  // Show generation count format before any data
-                }
+                // REQ-004: Always show 0/TRAINING_GENERATIONS format
+                progressText = `0/${TRAINING_GENERATIONS}`;
                 break;
             case 'INITIAL_TRAINING':
-                phaseText = 'Initial Training';
+                phaseText = 'Training';
                 phaseClass = 'ct_phase_training';
                 progressText = `${GENERATION_COUNT}/${TRAINING_GENERATIONS}`;
                 break;
@@ -2254,12 +2242,15 @@ function update_prediction_display() {
     const calibrationPrediction = get_calibration_prediction();
     
     // Next Trim prediction (matches HTML ID: ct_ov_next_trim)
-    // VIS-002 FIX: Show "Calibrating..." during calibration instead of "(target exceeded)"
-    const isCalibrating = ['INITIAL_TRAINING', 'CALIBRATING', 'RETRAINING'].includes(CALIBRATION_STATE);
-    
+    // VIS-002 FIX: Show status during calibration instead of "(target exceeded)"
+    const isTraining = CALIBRATION_STATE === 'INITIAL_TRAINING';
+    const isCalibrating = ['CALIBRATING', 'RETRAINING'].includes(CALIBRATION_STATE);
+
     if (trimEstimate.generations !== null) {
         if (trimEstimate.generations === 0) {
-            if (isCalibrating) {
+            if (isTraining) {
+                $('#ct_ov_next_trim').text('Training').removeClass('ct_text_orange');
+            } else if (isCalibrating) {
                 $('#ct_ov_next_trim').text('Calibrating...').removeClass('ct_text_orange');
             } else {
                 $('#ct_ov_next_trim').text('Imminent (target exceeded)').addClass('ct_text_orange');
@@ -4283,9 +4274,12 @@ async function test_summary_endpoint() {
 
     const body = JSON.stringify({
         model: 'gpt-3.5-turbo',
-        messages: [{ role: 'user', content: 'Context Truncator test -> reply "ok"' }],
-        max_tokens: 8,
-        temperature: 0.2
+        messages: [
+            { role: 'system', content: 'You are a helpful assistant. Respond directly without showing your thinking process.' },
+            { role: 'user', content: 'Confirm you are connected with a friendly greeting. Maximum 3 words.' }
+        ],
+        max_tokens: 20,
+        temperature: 0.7
     });
 
     try {
@@ -5660,15 +5654,8 @@ async function update_vector_stats_display() {
         $('#ct_ov_vector_stored').text('-- chunks');
     }
 
-    // Update retrieved stats
-    if (VECTOR_STATS.retrievedCount > 0) {
-        const avgScorePercent = (VECTOR_STATS.avgScore * 100).toFixed(1);
-        $('#ct_ov_vector_retrieved').text(`${VECTOR_STATS.retrievedCount} memories`);
-        $('#ct_ov_vector_avg_score').text(avgScorePercent);
-    } else {
-        $('#ct_ov_vector_retrieved').text('--');
-        $('#ct_ov_vector_avg_score').text('--');
-    }
+    // Update retrieved stats (display elements removed per REQ-007/REQ-008)
+    // Statistics are still tracked in VECTOR_STATS for internal use
 
     // Update buffer state
     const bufferCount = messageBuffer.length;

@@ -902,12 +902,20 @@ function calculate_truncation_index() {
     // Build message token map from last prompt for accurate estimation
     let last_raw_prompt = get_last_prompt_raw();
 
-    // V33: Fallback to cached raw prompt if unavailable but chat length matches
+    // V33: Fallback to cached raw prompt if unavailable
+    // During CALIBRATING, allow small length mismatches (±2 messages) for stability
     if (!last_raw_prompt) {
         const currentChatLength = getContext().chat?.length || 0;
-        if (CACHED_RAW_PROMPT && CACHED_RAW_PROMPT_CHAT_LENGTH === currentChatLength) {
+        const lengthDiff = Math.abs(CACHED_RAW_PROMPT_CHAT_LENGTH - currentChatLength);
+        const allowMismatch = (CALIBRATION_STATE === 'CALIBRATING' || CALIBRATION_STATE === 'RETRAINING') && lengthDiff <= 2;
+
+        if (CACHED_RAW_PROMPT && (CACHED_RAW_PROMPT_CHAT_LENGTH === currentChatLength || allowMismatch)) {
             last_raw_prompt = CACHED_RAW_PROMPT;
-            debug_trunc(`Using cached raw prompt for fallback (${last_raw_prompt.length} chars, chat length: ${currentChatLength})`);
+            if (allowMismatch && lengthDiff > 0) {
+                debug_trunc(`Using cached raw prompt with ${lengthDiff} message delta (${CALIBRATION_STATE} state)`);
+            } else {
+                debug_trunc(`Using cached raw prompt for fallback (${last_raw_prompt.length} chars, chat length: ${currentChatLength})`);
+            }
         } else {
             debug_trunc(`No cached prompt or chat length mismatch (${CACHED_RAW_PROMPT_CHAT_LENGTH} vs ${currentChatLength})`);
         }
@@ -922,6 +930,15 @@ function calculate_truncation_index() {
     let nonChatBudget;
     
     
+    // V33 FIX: During CALIBRATING/RETRAINING, if no raw prompt is available,
+    // preserve the existing truncation index to maintain cache stability.
+    // Recalculating with estimated ratios can cause unnecessary index changes.
+    if (!last_raw_prompt && (CALIBRATION_STATE === 'CALIBRATING' || CALIBRATION_STATE === 'RETRAINING')) {
+        const existingIndex = TRUNCATION_INDEX || 0;
+        debug_trunc(`  No raw prompt during ${CALIBRATION_STATE} - preserving index ${existingIndex} for cache stability`);
+        return existingIndex;
+    }
+
     if (!last_raw_prompt) {
         // V33: Use learned ratio from previous generations (more accurate than fixed 40%)
         nonChatBudget = Math.floor(currentPromptSize * LAST_KNOWN_NON_CHAT_RATIO);
@@ -1150,8 +1167,9 @@ function check_message_exclusion(message) {
 function update_message_inclusion_flags() {
     const ctx = getContext();
     const chat = ctx.chat;
-    
+
     debug("Updating message inclusion flags");
+    debug(`  Entry state: CALIBRATION_STATE=${CALIBRATION_STATE}, TRUNCATION_INDEX=${TRUNCATION_INDEX}`);
     
     // Load truncation index
     if (TRUNCATION_INDEX === null) {
@@ -1171,7 +1189,10 @@ function update_message_inclusion_flags() {
     // Only allow recalculation in WAITING, INITIAL_TRAINING, or STABLE states
     const lockIndex = CALIBRATION_STATE === 'CALIBRATING' || CALIBRATION_STATE === 'RETRAINING';
 
+    debug(`  lockIndex=${lockIndex}, state=${CALIBRATION_STATE}`);
+
     if (lockIndex) {
+        debug(`  Branch: LOCKED (${CALIBRATION_STATE})`);
         if (TRUNCATION_INDEX !== null) {
             // V33: Robust index locking - use actual kept message count, not chat length delta
             const keptMessages = chatLength - TRUNCATION_INDEX;
@@ -1198,6 +1219,7 @@ function update_message_inclusion_flags() {
             debug_trunc(`LOCKED: No index yet during ${CALIBRATION_STATE}, skipping recalculation`);
         }
     } else if (CALIBRATION_STATE === 'STABLE' && LAST_STABLE_CHAT_LENGTH > 0) {
+        debug(`  Branch: STABLE`);
         const newMessages = chatLength - LAST_STABLE_CHAT_LENGTH;
 
         if (newMessages <= 0) {
@@ -1210,6 +1232,7 @@ function update_message_inclusion_flags() {
             LAST_STABLE_CHAT_LENGTH = chatLength;
         }
     } else {
+        debug(`  Branch: RECALCULATE (${CALIBRATION_STATE})`);
         // Not locked and not in STABLE - recalculate (WAITING or INITIAL_TRAINING)
         TRUNCATION_INDEX = calculate_truncation_index();
         // Set LAST_STABLE_CHAT_LENGTH when we first calculate the index

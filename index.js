@@ -450,12 +450,12 @@ function get_prompt_chat_segments_from_raw(raw_prompt) {
         debug('  get_prompt_chat_segments_from_raw: No raw prompt');
         return null;
     }
-    
+
     // Try ChatML format first: <|im_start|>role
     const chatml_regex = /<\|im_start\|>(user|assistant|system)\n/g;
     let matches = [];
     let match;
-    
+
     // Check for ChatML format
     while ((match = chatml_regex.exec(raw_prompt)) !== null) {
         matches.push({
@@ -464,7 +464,7 @@ function get_prompt_chat_segments_from_raw(raw_prompt) {
             format: 'chatml'
         });
     }
-    
+
     // If no ChatML, try Llama 3 format
     if (matches.length === 0) {
         const llama3_regex = /<\|eot_id\|><\|start_header_id\|>(user|assistant|system)<\|end_header_id\|>/g;
@@ -476,24 +476,30 @@ function get_prompt_chat_segments_from_raw(raw_prompt) {
             });
         }
     }
-    
+
     debug(`  get_prompt_chat_segments_from_raw: Found ${matches.length} header matches (format: ${matches[0]?.format || 'none'})`);
-    
+
+    // V33: Extract first header position for system token calculation
+    const firstHeaderIndex = matches.length > 0 ? matches[0].index : -1;
+
     if (matches.length === 0) {
         debug('  get_prompt_chat_segments_from_raw: No headers found, not Llama 3 or ChatML format');
-        return null;
+        return { segments: null, firstHeaderIndex: -1, systemTokenCount: 0 };
     }
-    
+
+    // V33: Calculate system tokens (content before first chat header)
+    const systemTokenCount = firstHeaderIndex > 0 ? count_tokens(raw_prompt.slice(0, firstHeaderIndex)) : 0;
+
     let segments = [];
     for (let i = 0; i < matches.length; i++) {
         let current = matches[i];
         let next = matches[i + 1];
-        
+
         // Only count user and assistant messages (skip system)
         if (current.role !== 'user' && current.role !== 'assistant') {
             continue;
         }
-        
+
         let end_index;
         if (current.format === 'chatml') {
             // ChatML ends with <|im_end|>
@@ -503,27 +509,27 @@ function get_prompt_chat_segments_from_raw(raw_prompt) {
             // Llama 3 ends at next header or end of prompt
             end_index = next ? next.index : raw_prompt.length;
         }
-        
+
         let segment = raw_prompt.slice(current.index, end_index);
-        
+
         segments.push({
             role: current.role,
             tokenCount: count_tokens(segment),
         });
     }
-    
-    
-    return segments;
+
+
+    return { segments, firstHeaderIndex, systemTokenCount };
 }
 
 // Build a map of message index to actual token count in prompt
 function get_prompt_message_tokens_from_raw(raw_prompt, chat) {
-    let segments = get_prompt_chat_segments_from_raw(raw_prompt);
+    const { segments } = get_prompt_chat_segments_from_raw(raw_prompt);
     if (!segments) {
         debug('  get_prompt_message_tokens_from_raw: No segments found');
         return null;
     }
-    
+
     debug(`  get_prompt_message_tokens_from_raw: Found ${segments.length} segments`);
     
     let map = new Map();
@@ -950,8 +956,8 @@ function calculate_truncation_index() {
     } else {
         // Have raw prompt - calculate accurately
         totalPromptTokens = count_tokens(last_raw_prompt);
-        
-        let segments = get_prompt_chat_segments_from_raw(last_raw_prompt);
+
+        const { segments } = get_prompt_chat_segments_from_raw(last_raw_prompt);
         if (segments && segments.length > 0) {
             promptChatTokens = segments.reduce((sum, seg) => sum + seg.tokenCount, 0);
             DEBUG_SEGMENT_COUNT = segments.length;
@@ -1416,6 +1422,9 @@ let LAST_PREDICTED_CHAT_SIZE_RAW = 0;  // V29: Uncorrected value for factor calc
 let LAST_PREDICTED_NON_CHAT_SIZE = 0;
 let LAST_KNOWN_NON_CHAT_RATIO = 0.40;  // V33: Learned ratio, starts at 40%
 
+// V33: System token tracking for accurate context utilization calculation
+let CURRENT_SYSTEM_TOKEN_COUNT = 0;
+
 // Cache for valid Overview tab data to prevent wild utilization swings
 let LAST_VALID_UTILIZATION = null;
 let LAST_VALID_MAX_CONTEXT = null;
@@ -1518,7 +1527,7 @@ function update_status_display() {
     
     // Safety: If tokenizer returned 0, try segment-based calculation
     if (actualSize === 0 && last_raw_prompt && last_raw_prompt.length > 0) {
-        const segments = get_prompt_chat_segments_from_raw(last_raw_prompt);
+        const { segments, systemTokenCount } = get_prompt_chat_segments_from_raw(last_raw_prompt);
         if (segments && segments.length > 0) {
             actualSize = segments.reduce((sum, seg) => sum + seg.tokenCount, 0);
             debug(`[TOKENIZER] Used segment sum: ${actualSize} tokens from ${segments.length} segments`);
@@ -1549,7 +1558,7 @@ function update_status_display() {
 
     if (LAST_PREDICTED_SIZE > 0 && LAST_PREDICTED_CHAT_SIZE > 0 && !skipFactorUpdate) {
         // Analyze actual chat vs non-chat from current prompt
-        const segments = get_prompt_chat_segments_from_raw(last_raw_prompt);
+        const { segments, systemTokenCount } = get_prompt_chat_segments_from_raw(last_raw_prompt);
         const actualChatTokens = segments ? segments.reduce((sum, seg) => sum + seg.tokenCount, 0) : 0;
         const actualNonChatTokens = actualSize - actualChatTokens;
         
@@ -2065,6 +2074,61 @@ function calculate_lorevault_tokens(raw_prompt) {
     return count_tokens(content);
 }
 
+// Calculate System Prompt tokens from raw prompt
+// System content is everything BEFORE the first chat message header
+// that is NOT already counted by other categories (World Rules, LoreVault, etc.)
+function calculate_system_tokens(raw_prompt, firstHeaderIndex, worldRulesTokens, lorevaultTokens) {
+    if (!raw_prompt) return 0;
+
+    // If no headers found, check for common system markers
+    if (firstHeaderIndex < 0) {
+        // Look for first chat-like content
+        const chatStartMarkers = [
+            /<\|im_start\|>(user|assistant)/,
+            /<\|start_header_id\|>(user|assistant)/,
+            /^(User|Assistant|{{user}}|{{char}}):/m
+        ];
+
+        let earliestChatStart = raw_prompt.length;
+        for (const marker of chatStartMarkers) {
+            const match = raw_prompt.match(marker);
+            if (match && match.index < earliestChatStart) {
+                earliestChatStart = match.index;
+            }
+        }
+
+        // If we found a chat start marker, use that as boundary
+        if (earliestChatStart < raw_prompt.length) {
+            firstHeaderIndex = earliestChatStart;
+        } else {
+            // No clear boundary found - assume entire prompt is system
+            // This handles edge cases like pure system prompts
+            firstHeaderIndex = raw_prompt.length;
+        }
+    }
+
+    // Content before first header is system prompt
+    const systemContent = raw_prompt.substring(0, firstHeaderIndex);
+
+    // Subtract any overlapping categories that fall within system content
+    // (e.g., if World Rules somehow starts before first header)
+    let adjustedSystemTokens = count_tokens(systemContent);
+
+    // Check if World Rules overlaps with system content
+    if (worldRulesTokens > 0 && systemContent.includes('## Lore:')) {
+        // World Rules is within system content - subtract it
+        adjustedSystemTokens = Math.max(0, adjustedSystemTokens - worldRulesTokens);
+    }
+
+    // Check if LoreVault overlaps with system content
+    if (lorevaultTokens > 0 && systemContent.includes('[STORY MEMORY]')) {
+        // LoreVault is within system content - subtract it
+        adjustedSystemTokens = Math.max(0, adjustedSystemTokens - lorevaultTokens);
+    }
+
+    return adjustedSystemTokens;
+}
+
 // Update the Overview tab with current stats
 function update_overview_tab() {
     // VIS-001 FIX: Handle initial state (no prompt yet)
@@ -2143,14 +2207,42 @@ function update_overview_tab() {
     // Update Breakdown Bar (now includes World Rules)
     // Only calculate breakdown if we have a valid actualSize and maxContext
     if (last_raw_prompt && actualSize > 0 && maxContext > 0) {
-        const segments = get_prompt_chat_segments_from_raw(last_raw_prompt);
+        // Get segment detection results (includes firstHeaderIndex)
+        const segmentResult = get_prompt_chat_segments_from_raw(last_raw_prompt);
+        const segments = segmentResult.segments;
+        const firstHeaderIndex = segmentResult.firstHeaderIndex;
+
         const chatTokens = segments ? segments.reduce((sum, seg) => sum + seg.tokenCount, 0) : 0;
         const worldRulesTokens = calculate_world_rules_tokens(last_raw_prompt);
         const lorevaultTokens = calculate_lorevault_tokens(last_raw_prompt);
         const summaryTokens = count_tokens(get_summary_injection());
         const qdrantTokens = get_qdrant_injection_tokens();
-        // System is everything else (total - chat - worldRules - lorevault - summaries - qdrant)
-        const systemTokens = Math.max(0, actualSize - chatTokens - worldRulesTokens - lorevaultTokens - summaryTokens - qdrantTokens);
+
+        // Calculate system tokens explicitly using new function
+        let systemTokens = calculate_system_tokens(last_raw_prompt, firstHeaderIndex, worldRulesTokens, lorevaultTokens);
+
+        // Fallback: if explicit detection failed, use subtraction method
+        if (systemTokens === 0 && firstHeaderIndex < 0) {
+            systemTokens = Math.max(0, actualSize - chatTokens - worldRulesTokens - lorevaultTokens - summaryTokens - qdrantTokens);
+        }
+
+        // Debug: warn if categories exceed total (with tolerance)
+        if (get_settings('debug_truncation')) {
+            const categorySum = chatTokens + worldRulesTokens + lorevaultTokens + summaryTokens + qdrantTokens + systemTokens;
+            if (categorySum > actualSize * 1.05) { // 5% tolerance for rounding
+                console.warn(`[CacheGuard] Category sum (${categorySum}) exceeds actualSize (${actualSize}) by ${categorySum - actualSize} tokens`);
+            }
+
+            // Log category boundaries for debugging
+            debug_trunc(`Token Category Boundaries:`);
+            debug_trunc(`  System: 0-${firstHeaderIndex} (${systemTokens} tokens)`);
+            debug_trunc(`  World Rules: ${worldRulesTokens > 0 ? 'detected' : 'none'} (${worldRulesTokens} tokens)`);
+            debug_trunc(`  LoreVault: ${lorevaultTokens > 0 ? 'detected' : 'none'} (${lorevaultTokens} tokens)`);
+            debug_trunc(`  Chat: segments from ${firstHeaderIndex} (${chatTokens} tokens)`);
+            debug_trunc(`  Summaries: injected (${summaryTokens} tokens)`);
+            debug_trunc(`  Qdrant: injected (${qdrantTokens} tokens)`);
+            debug_trunc(`  Total: ${actualSize} tokens | Category Sum: ${categorySum} tokens`);
+        }
         
         // Use corrected values for breakdown so it matches the gauge
         const correctedChatTokens = Math.floor(chatTokens * CHAT_TOKEN_CORRECTION_FACTOR);
@@ -2176,8 +2268,9 @@ function update_overview_tab() {
         $('#ct_breakdown_free').css('width', `${freePct}%`);
         
         // Update token counts in foldable section with corrected values
+        // Use explicit systemTokens instead of correctedSystemTokens (which is based on subtraction)
         $('#ct_breakdown_chat_tokens').text(`${correctedChatTokens.toLocaleString()} tokens`);
-        $('#ct_breakdown_system_tokens').text(`${correctedSystemTokens.toLocaleString()} tokens`);
+        $('#ct_breakdown_system_tokens').text(`${systemTokens.toLocaleString()} tokens`);
         $('#ct_breakdown_worldrules_tokens').text(`${worldRulesTokens.toLocaleString()} tokens`);
         $('#ct_breakdown_lorevault_tokens').text(`${lorevaultTokens.toLocaleString()} tokens`);
         $('#ct_breakdown_summaries_tokens').text(`${summaryTokens.toLocaleString()} tokens`);

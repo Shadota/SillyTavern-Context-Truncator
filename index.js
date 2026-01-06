@@ -524,7 +524,12 @@ function get_prompt_chat_segments_from_raw(raw_prompt) {
 
 // Build a map of message index to actual token count in prompt
 function get_prompt_message_tokens_from_raw(raw_prompt, chat) {
-    const { segments } = get_prompt_chat_segments_from_raw(raw_prompt);
+    const result = get_prompt_chat_segments_from_raw(raw_prompt);
+    if (!result) {
+        debug('  get_prompt_message_tokens_from_raw: No result from segment parser');
+        return null;
+    }
+    const { segments } = result;
     if (!segments) {
         debug('  get_prompt_message_tokens_from_raw: No segments found');
         return null;
@@ -957,7 +962,8 @@ function calculate_truncation_index() {
         // Have raw prompt - calculate accurately
         totalPromptTokens = count_tokens(last_raw_prompt);
 
-        const { segments } = get_prompt_chat_segments_from_raw(last_raw_prompt);
+        const segmentResult = get_prompt_chat_segments_from_raw(last_raw_prompt);
+        const segments = segmentResult?.segments;
         if (segments && segments.length > 0) {
             promptChatTokens = segments.reduce((sum, seg) => sum + seg.tokenCount, 0);
             DEBUG_SEGMENT_COUNT = segments.length;
@@ -1527,7 +1533,8 @@ function update_status_display() {
     
     // Safety: If tokenizer returned 0, try segment-based calculation
     if (actualSize === 0 && last_raw_prompt && last_raw_prompt.length > 0) {
-        const { segments, systemTokenCount } = get_prompt_chat_segments_from_raw(last_raw_prompt);
+        const segmentResult = get_prompt_chat_segments_from_raw(last_raw_prompt);
+        const segments = segmentResult?.segments;
         if (segments && segments.length > 0) {
             actualSize = segments.reduce((sum, seg) => sum + seg.tokenCount, 0);
             debug(`[TOKENIZER] Used segment sum: ${actualSize} tokens from ${segments.length} segments`);
@@ -1558,7 +1565,8 @@ function update_status_display() {
 
     if (LAST_PREDICTED_SIZE > 0 && LAST_PREDICTED_CHAT_SIZE > 0 && !skipFactorUpdate) {
         // Analyze actual chat vs non-chat from current prompt
-        const { segments, systemTokenCount } = get_prompt_chat_segments_from_raw(last_raw_prompt);
+        const segmentResult2 = get_prompt_chat_segments_from_raw(last_raw_prompt);
+        const segments = segmentResult2?.segments;
         const actualChatTokens = segments ? segments.reduce((sum, seg) => sum + seg.tokenCount, 0) : 0;
         const actualNonChatTokens = actualSize - actualChatTokens;
         

@@ -1219,12 +1219,15 @@ function update_message_inclusion_flags() {
                 // Check if we need a batch trim based on context overflow
                 // Use the ACTUAL context size from last generation, not estimate
                 const targetSize = get_settings('target_context_size');
-                if (LAST_ACTUAL_PROMPT_SIZE > targetSize * 1.10) {  // 10% over target
+                // V33 FIX: Use dynamic tolerance for batch trim threshold (aligns with destabilization)
+                const batchTrimTolerance = get_dynamic_tolerance() * 1.5;
+                const batchTrimThreshold = targetSize * (1.0 + batchTrimTolerance);
+                if (LAST_ACTUAL_PROMPT_SIZE > batchTrimThreshold) {
                     TRUNCATION_INDEX = TRUNCATION_INDEX + batchSize;
                     LAST_STABLE_CHAT_LENGTH = chatLength;
-                    debug_trunc(`LOCKED: Batch trim triggered (10% over target), index ${TRUNCATION_INDEX - batchSize}→${TRUNCATION_INDEX}`);
+                    debug_trunc(`LOCKED: Batch trim triggered (${(batchTrimTolerance * 100).toFixed(1)}% over target), index ${TRUNCATION_INDEX - batchSize}→${TRUNCATION_INDEX}`);
                 } else {
-                    debug_trunc(`LOCKED: Index stays at ${TRUNCATION_INDEX} (under 10% threshold)`);
+                    debug_trunc(`LOCKED: Index stays at ${TRUNCATION_INDEX} (under ${(batchTrimTolerance * 100).toFixed(1)}% threshold)`);
                 }
             } else {
                 debug_trunc(`LOCKED: Index stays at ${TRUNCATION_INDEX} (would exceed minKeep)`);
@@ -1247,15 +1250,18 @@ function update_message_inclusion_flags() {
             debug_trunc(`STABLE: ${newMessages} new message(s), preserving index for cache coherence`);
             
             // Only consider batch trim if we have actual prompt size data
-            // showing we're significantly over target (>10%)
+            // showing we're significantly over target
             const targetSize = get_settings('target_context_size');
-            if (LAST_ACTUAL_PROMPT_SIZE > targetSize * 1.10) {
+            // V33 FIX: Use dynamic tolerance for batch trim threshold (aligns with destabilization)
+            const batchTrimTolerance = get_dynamic_tolerance() * 1.5;
+            const batchTrimThreshold = targetSize * (1.0 + batchTrimTolerance);
+            if (LAST_ACTUAL_PROMPT_SIZE > batchTrimThreshold) {
                 const batchSize = get_settings('batch_size');
                 const oldIndex = TRUNCATION_INDEX;
                 TRUNCATION_INDEX = TRUNCATION_INDEX + batchSize;
-                debug_trunc(`STABLE: Batch trim triggered (10% over target), index ${oldIndex}→${TRUNCATION_INDEX}`);
+                debug_trunc(`STABLE: Batch trim triggered (${(batchTrimTolerance * 100).toFixed(1)}% over target), index ${oldIndex}→${TRUNCATION_INDEX}`);
             } else {
-                debug_trunc(`STABLE: Index preserved at ${TRUNCATION_INDEX} (under threshold)`);
+                debug_trunc(`STABLE: Index preserved at ${TRUNCATION_INDEX} (under ${(batchTrimTolerance * 100).toFixed(1)}% threshold)`);
             }
             
             LAST_STABLE_CHAT_LENGTH = chatLength;
@@ -1285,11 +1291,14 @@ function update_message_inclusion_flags() {
     // lagging = true means the message is BEFORE the threshold (excluded from context, "lagging behind")
     // lagging = false means the message is AT OR AFTER the threshold (kept in context)
     for (let i = 0; i < chat.length; i++) {
+        const wasLagging = get_data(chat[i], 'lagging') || false;  // V33: Track previous state
         const lagging = i < TRUNCATION_INDEX;
         set_data(chat[i], 'lagging', lagging);
-        
-        // If lagging (excluded) and has no summary, mark for summarization
-        if (lagging && !get_memory(chat[i]) && !chat[i].is_system) {
+
+        // V33 FIX: Only mark for summarization when message TRANSITIONS to lagging
+        // This prevents over-summarization of historical messages
+        const newlyLagging = lagging && !wasLagging;
+        if (newlyLagging && !get_memory(chat[i]) && !chat[i].is_system) {
             set_data(chat[i], 'needs_summary', true);
         }
     }
@@ -3808,13 +3817,22 @@ const summaryQueue = new SummaryQueue();
 async function auto_summarize_chat() {
     const ctx = getContext();
     const chat = ctx.chat;
-    
+
     if (!get_settings('auto_summarize')) {
         return;
     }
-    
+
+    // V33 FIX: Skip auto-summarization if context is significantly overflowing
+    // Trim should happen first to make room, then summarization can proceed
+    const targetSize = get_settings('target_context_size');
+    const overflowThreshold = targetSize * 1.05;  // 5% buffer
+    if (LAST_ACTUAL_PROMPT_SIZE > overflowThreshold && CALIBRATION_STATE === 'STABLE') {
+        debug('Auto-summarization skipped: context overflow detected, waiting for trim');
+        return;
+    }
+
     debug('Auto-summarizing chat...');
-    
+
     // Find messages that need summaries (respecting delay window)
     const to_summarize = [];
     const summarization_delay = get_settings('summarization_delay');

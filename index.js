@@ -1249,19 +1249,28 @@ function update_message_inclusion_flags() {
             // Only advance index if we have concrete evidence of overflow
             debug_trunc(`STABLE: ${newMessages} new message(s), preserving index for cache coherence`);
             
-            // Only consider batch trim if we have actual prompt size data
-            // showing we're significantly over target
+            // REQ-001: Two-tier trim logic in STABLE
+            // Tier 1: If just over target, do a conservative trim (smaller than batch)
+            // Tier 2: If way over threshold, do batch trim
             const targetSize = get_settings('target_context_size');
-            // V33 FIX: Use dynamic tolerance for batch trim threshold (aligns with destabilization)
             const batchTrimTolerance = get_dynamic_tolerance() * 1.5;
             const batchTrimThreshold = targetSize * (1.0 + batchTrimTolerance);
-            if (LAST_ACTUAL_PROMPT_SIZE > batchTrimThreshold) {
+            const overTarget = LAST_ACTUAL_PROMPT_SIZE > targetSize;
+            const wayOverThreshold = LAST_ACTUAL_PROMPT_SIZE > batchTrimThreshold;
+
+            if (wayOverThreshold) {
+                // Tier 2: Batch trim for significant overflow
                 const batchSize = get_settings('batch_size');
                 const oldIndex = TRUNCATION_INDEX;
                 TRUNCATION_INDEX = TRUNCATION_INDEX + batchSize;
                 debug_trunc(`STABLE: Batch trim triggered (${(batchTrimTolerance * 100).toFixed(1)}% over target), index ${oldIndex}→${TRUNCATION_INDEX}`);
+            } else if (overTarget) {
+                // Tier 1: Conservative single-message trim when just over target
+                const oldIndex = TRUNCATION_INDEX;
+                TRUNCATION_INDEX = TRUNCATION_INDEX + 1;  // Single message trim
+                debug_trunc(`STABLE: Conservative trim (over target by ${LAST_ACTUAL_PROMPT_SIZE - targetSize} tokens), index ${oldIndex}→${TRUNCATION_INDEX}`);
             } else {
-                debug_trunc(`STABLE: Index preserved at ${TRUNCATION_INDEX} (under ${(batchTrimTolerance * 100).toFixed(1)}% threshold)`);
+                debug_trunc(`STABLE: Index preserved at ${TRUNCATION_INDEX} (under target)`);
             }
             
             LAST_STABLE_CHAT_LENGTH = chatLength;
@@ -1775,6 +1784,14 @@ function calibrate_target_size(actualSize) {
                 debug_trunc(`Entering CALIBRATING with ${LAST_STABLE_CHAT_LENGTH} messages`);
                 // Calculate initial target based on learned correction factor
                 calculate_calibrated_target(maxContext, targetUtilization);
+
+                // REQ-003: Check factor convergence immediately on CALIBRATING entry
+                const factorChange = Math.abs(CHAT_TOKEN_CORRECTION_FACTOR - LAST_CORRECTION_FACTOR);
+                if (factorChange < 0.02) {
+                    STABLE_COUNT = 1;  // Count this generation as converged
+                    debug_trunc(`Initial convergence detected on CALIBRATING entry, STABLE_COUNT = 1`);
+                }
+                LAST_CORRECTION_FACTOR = CHAT_TOKEN_CORRECTION_FACTOR;
             }
             break;
             
@@ -1798,7 +1815,15 @@ function calibrate_target_size(actualSize) {
                     // V33: Track chat length for STABLE state locking
                     LAST_STABLE_CHAT_LENGTH = getContext().chat?.length || 0;
                     debug_trunc(`Entering STABLE state with ${LAST_STABLE_CHAT_LENGTH} messages`);
-                    toastr.success(`Calibration complete! Target: ${get_settings('target_context_size').toLocaleString()} tokens`, MODULE_NAME_FANCY);
+                    // REQ-005: Removed intrusive calibration complete toast
+                    // toastr.success(`Calibration complete! Target: ${get_settings('target_context_size').toLocaleString()} tokens`, MODULE_NAME_FANCY);
+
+                    // REQ-002: Force recalculation if entering STABLE while over target
+                    const targetSize = get_settings('target_context_size');
+                    if (LAST_ACTUAL_PROMPT_SIZE > targetSize) {
+                        debug_trunc(`STABLE entry: Over target (${LAST_ACTUAL_PROMPT_SIZE} > ${targetSize}), forcing recalculation`);
+                        TRUNCATION_INDEX = null;  // Force recalculation in next refresh_memory()
+                    }
                 }
             } else {
                 // Factor still changing - decay stable count only for very large swings
@@ -2567,10 +2592,14 @@ function update_prediction_display() {
     
     // Next Trim prediction (matches HTML ID: ct_ov_next_trim)
     // VIS-002 FIX: Show status during calibration instead of "(target exceeded)"
+    // REQ-006: Show "Waiting for data" during WAITING state
+    const isWaiting = CALIBRATION_STATE === 'WAITING';
     const isTraining = CALIBRATION_STATE === 'INITIAL_TRAINING';
     const isCalibrating = ['CALIBRATING', 'RETRAINING'].includes(CALIBRATION_STATE);
 
-    if (trimEstimate.generations !== null) {
+    if (isWaiting) {
+        $('#ct_ov_next_trim').text('Waiting for data').removeClass('ct_text_orange');
+    } else if (trimEstimate.generations !== null) {
         if (trimEstimate.generations === 0) {
             if (isTraining) {
                 $('#ct_ov_next_trim').text('Training').removeClass('ct_text_orange');
@@ -3380,8 +3409,14 @@ class SummaryQueue {
         }
         
         this.active = false;
+
+        // REQ-004: Notify on natural completion (not when user stopped)
+        if (!this.stopped && this.queue.length === 0) {
+            toastr.info('Summarization complete', MODULE_NAME_FANCY, { timeOut: 2000 });
+        }
+
         this.stopped = false;
-        
+
         // Final update after processing completes
         update_summary_stats_display();
         update_overview_tab();

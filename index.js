@@ -103,6 +103,8 @@ Recent chat always takes precedence over these notes.
     debug_qdrant: false,
     debug_synergy: false,
     api_tokenizer_enabled: true,  // REQ-008: Use API backend for accurate token counts
+    tabby_api_key: '',            // REQ-B01: Optional TabbyAPI key for tokenization
+    kobold_api_key: '',           // REQ-B05: Optional KoboldCPP key for tokenization
 
     // ==================== QDRANT SETTINGS ====================
     qdrant_enabled: false,
@@ -181,6 +183,7 @@ let DETECTED_BACKEND_TYPE = null;        // 'tabby' | 'koboldcpp' | null
 let API_TOKENIZER_DISABLED_UNTIL = 0;    // Timestamp for temporary disable after errors
 let LAST_TOKEN_ACCURACY = null;          // Percentage for display
 let LAST_TOKEN_TIER = 0;                 // 1=API, 2=SillyTavern, 3=Learned, 4=Hardcoded
+let LAST_LOGGED_TIER = 0;                // Track last logged tier to reduce spam
 
 const TRAINING_GENERATIONS = 2;  // Generations needed to train correction factor (reduced from 3)
 const STABLE_THRESHOLD = 5;      // Consecutive stable gens to reach STABLE state
@@ -370,7 +373,10 @@ function count_tokens(text, padding = 0) {
     if (stResult > 0) {
         USING_ESTIMATION_MODE = false;
         LAST_TOKEN_TIER = 2;
-        debug_trunc(`[TOKENIZER] TIER 2 (SillyTavern): ${stResult} tokens`);
+        if (LAST_LOGGED_TIER !== 2) {
+            debug_trunc(`[TOKENIZER] Switched to TIER 2 (SillyTavern)`);
+            LAST_LOGGED_TIER = 2;
+        }
         return stResult;
     }
 
@@ -379,7 +385,10 @@ function count_tokens(text, padding = 0) {
         USING_ESTIMATION_MODE = true;
         LAST_TOKEN_TIER = 3;
         const estimate = Math.floor(textLen / LEARNED_CHARS_PER_TOKEN) + padding;
-        debug_trunc(`[TOKENIZER] TIER 3 (Learned): ${textLen} chars → ${estimate} tokens (${LEARNED_CHARS_PER_TOKEN.toFixed(2)} chars/token)`);
+        if (LAST_LOGGED_TIER !== 3) {
+            debug_trunc(`[TOKENIZER] Switched to TIER 3 (Learned, ${LEARNED_CHARS_PER_TOKEN.toFixed(2)} chars/token)`);
+            LAST_LOGGED_TIER = 3;
+        }
         return estimate;
     }
 
@@ -387,7 +396,10 @@ function count_tokens(text, padding = 0) {
     USING_ESTIMATION_MODE = true;
     LAST_TOKEN_TIER = 4;
     const estimate = Math.floor(textLen / 4) + padding;
-    debug_trunc(`[TOKENIZER] TIER 4 (Hardcoded): ${textLen} chars → ${estimate} tokens (4.00 chars/token)`);
+    if (LAST_LOGGED_TIER !== 4) {
+        debug_trunc(`[TOKENIZER] Switched to TIER 4 (Hardcoded, 4.00 chars/token)`);
+        LAST_LOGGED_TIER = 4;
+    }
     return estimate;
 }
 
@@ -475,14 +487,18 @@ async function tokenize_via_tabby(text, serverUrl) {
 
     const headers = { 'Content-Type': 'application/json' };
 
-    // Try to get API key from SillyTavern settings
-    try {
-        const ctx = getContext();
-        const apiKey = ctx.textCompletionSettings?.api_key_tabby;
-        if (apiKey) {
-            headers['x-api-key'] = apiKey;
-        }
-    } catch (e) { /* ignore */ }
+    // REQ-B02: Try CacheGuard setting first, then SillyTavern context
+    let apiKey = get_settings('tabby_api_key');
+    if (!apiKey) {
+        try {
+            const ctx = getContext();
+            apiKey = ctx.textCompletionSettings?.api_key_tabby;
+        } catch (e) { /* ignore */ }
+    }
+    if (apiKey) {
+        headers['x-api-key'] = apiKey;
+        debug_trunc(`[API-TOK] Using ${get_settings('tabby_api_key') ? 'CacheGuard' : 'SillyTavern'} API key`);
+    }
 
     const response = await fetch(url, {
         method: 'POST',
@@ -496,6 +512,9 @@ async function tokenize_via_tabby(text, serverUrl) {
     });
 
     if (!response.ok) {
+        if (response.status === 401) {
+            throw new Error(`TabbyAPI tokenize failed: 401 Unauthorized. Configure 'TabbyAPI Key' in CacheGuard settings, or enable allowKeysExposure in SillyTavern config.`);
+        }
         throw new Error(`TabbyAPI tokenize failed: ${response.status}`);
     }
 
@@ -1450,6 +1469,15 @@ function update_message_inclusion_flags() {
         }
     } else if (CALIBRATION_STATE === 'STABLE' && LAST_STABLE_CHAT_LENGTH > 0) {
         debug(`  Branch: STABLE`);
+
+        // REQ-A01: Handle null TRUNCATION_INDEX (set by REQ-002 on STABLE entry when over target)
+        if (TRUNCATION_INDEX === null) {
+            debug_trunc(`STABLE: TRUNCATION_INDEX is null, recalculating...`);
+            TRUNCATION_INDEX = calculate_truncation_index();
+            debug_trunc(`STABLE: Recalculated index: ${TRUNCATION_INDEX}`);
+            save_truncation_index();
+        }
+
         const newMessages = chatLength - LAST_STABLE_CHAT_LENGTH;
 
         if (newMessages <= 0) {
@@ -4366,6 +4394,16 @@ function initialize_ui_listeners() {
             DETECTED_BACKEND_TYPE = null;
             API_TOKENIZER_DISABLED_UNTIL = 0;
         }
+    });
+
+    // REQ-B01: TabbyAPI key setting
+    $('#ct_tabby_api_key').val(get_settings('tabby_api_key') || '').on('change', function() {
+        update_settings('tabby_api_key', $(this).val());
+    });
+
+    // REQ-B05: KoboldCPP key setting
+    $('#ct_kobold_api_key').val(get_settings('kobold_api_key') || '').on('change', function() {
+        update_settings('kobold_api_key', $(this).val());
     });
 
     // Batch size (now a slider) - reset truncation when changed

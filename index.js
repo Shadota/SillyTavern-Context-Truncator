@@ -372,10 +372,13 @@ function count_tokens(text, padding = 0) {
     const stResult = ctx.getTokenCount(text, padding);
     if (stResult > 0) {
         USING_ESTIMATION_MODE = false;
-        LAST_TOKEN_TIER = 2;
-        if (LAST_LOGGED_TIER !== 2) {
-            debug_trunc(`[TOKENIZER] Switched to TIER 2 (SillyTavern)`);
-            LAST_LOGGED_TIER = 2;
+        // Preserve TIER 1 only if API is still enabled and was confirmed working
+        if (LAST_TOKEN_TIER !== 1 || !get_settings('api_tokenizer_enabled')) {
+            LAST_TOKEN_TIER = 2;
+            if (LAST_LOGGED_TIER !== 2) {
+                debug_trunc(`[TOKENIZER] Switched to TIER 2 (SillyTavern)`);
+                LAST_LOGGED_TIER = 2;
+            }
         }
         return stResult;
     }

@@ -541,6 +541,91 @@ async function tokenize_via_kobold(text, serverUrl) {
     return data.value || 0;
 }
 
+// REQ-003: Test tokenizer connection and authentication
+async function test_tokenizer_connection() {
+    const $status = $('#ct_tokenizer_status');
+    const $button = $('#ct_test_tokenizer');
+
+    // Get server URL
+    const serverUrl = get_api_server_url();
+    if (!serverUrl) {
+        $status.removeClass().addClass('ct_status_message ct_status_error')
+               .text('No server URL detected. Connect to TabbyAPI first.');
+        return;
+    }
+
+    // Show testing state
+    $button.prop('disabled', true);
+    $status.removeClass().addClass('ct_status_message ct_status_info')
+           .text('Testing...');
+
+    try {
+        const url = `${serverUrl.replace(/\/+$/, '')}/v1/token/encode`;
+        const headers = { 'Content-Type': 'application/json' };
+
+        // Get API key (same logic as tokenize_via_tabby)
+        let apiKey = get_settings('tabby_api_key');
+        if (apiKey) {
+            apiKey = apiKey.trim();
+        }
+        if (!apiKey) {
+            try {
+                const ctx = getContext();
+                apiKey = ctx.textCompletionSettings?.api_key_tabby;
+            } catch (e) { /* ignore */ }
+        }
+        if (apiKey) {
+            headers['x-api-key'] = apiKey;
+        }
+
+        const response = await fetch(url, {
+            method: 'POST',
+            headers: headers,
+            body: JSON.stringify({
+                text: 'CacheGuard tokenizer test',
+                add_bos_token: true,
+                encode_special_tokens: true
+            }),
+            signal: AbortSignal.timeout(10000)
+        });
+
+        if (!response.ok) {
+            if (response.status === 401) {
+                throw new Error('Authentication failed (401). Check your TabbyAPI key.');
+            } else if (response.status === 404) {
+                throw new Error('Endpoint not found (404). Is this a TabbyAPI server?');
+            }
+            throw new Error(`Server error: ${response.status} ${response.statusText}`);
+        }
+
+        const data = await response.json();
+        const tokenCount = data.length || 0;
+
+        if (tokenCount > 0) {
+            $status.removeClass().addClass('ct_status_message ct_status_success')
+                   .text(`Connected! Tokenized test text: ${tokenCount} tokens`);
+            // Auto-clear after 10 seconds
+            setTimeout(() => {
+                $status.text('').removeClass('ct_status_success ct_status_error ct_status_info');
+            }, 10000);
+        } else {
+            throw new Error('Invalid response format from server.');
+        }
+
+    } catch (e) {
+        let errorMsg = e.message;
+        if (e.name === 'TimeoutError') {
+            errorMsg = 'Request timed out. Check server connectivity.';
+        } else if (e.name === 'TypeError' && e.message.includes('fetch')) {
+            errorMsg = 'Connection failed. Check server URL and connectivity.';
+        }
+        $status.removeClass().addClass('ct_status_message ct_status_error')
+               .text(errorMsg);
+    } finally {
+        $button.prop('disabled', false);
+    }
+}
+
 // REQ-008: Main API tokenizer function
 async function count_tokens_via_api(text) {
     // Check if disabled
@@ -4388,7 +4473,7 @@ function initialize_ui_listeners() {
 
     // REQ-008: API tokenizer toggle
     $('#ct_api_tokenizer_enabled').prop('checked', get_settings('api_tokenizer_enabled')).on('change', function() {
-        update_settings('api_tokenizer_enabled', $(this).is(':checked'));
+        set_settings('api_tokenizer_enabled', $(this).is(':checked'));
         if (!$(this).is(':checked')) {
             // Clear detection cache when disabled
             DETECTED_BACKEND_TYPE = null;
@@ -4398,13 +4483,16 @@ function initialize_ui_listeners() {
 
     // REQ-B01: TabbyAPI key setting
     $('#ct_tabby_api_key').val(get_settings('tabby_api_key') || '').on('change', function() {
-        update_settings('tabby_api_key', $(this).val());
+        set_settings('tabby_api_key', $(this).val());
     });
 
     // REQ-B05: KoboldCPP key setting
     $('#ct_kobold_api_key').val(get_settings('kobold_api_key') || '').on('change', function() {
-        update_settings('kobold_api_key', $(this).val());
+        set_settings('kobold_api_key', $(this).val());
     });
+
+    // REQ-003: Test tokenizer button
+    $('#ct_test_tokenizer').on('click', test_tokenizer_connection);
 
     // Batch size (now a slider) - reset truncation when changed
     bind_range_setting('#ct_batch_size', 'batch_size', '#ct_batch_size_display');

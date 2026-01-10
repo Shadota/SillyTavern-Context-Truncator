@@ -628,6 +628,8 @@
                     <div class="ct_setting_row" style="margin-left: 20px;">
                         <label for="ct_tabby_api_key">TabbyAPI Key (optional):</label>
                         <input id="ct_tabby_api_key" type="password" class="text_pole" placeholder="Enter if 401 errors occur" style="width: 200px;" />
+                        <button id="ct_test_tokenizer" class="menu_button" type="button" style="margin-left: 5px;">Test</button>
+                        <span id="ct_tokenizer_status" style="margin-left: 10px;"></span>
                         <span class="ct_tooltip ct_tooltip_right">
                             <i class="fa-solid fa-circle-info ct_info_icon"></i>
                             <span class="ct_tooltip_text">Enter your TabbyAPI key if API tokenization returns 401 errors. Leave blank to use SillyTavern's stored key (requires allowKeysExposure in config).</span>

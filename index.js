@@ -185,6 +185,11 @@ let LAST_TOKEN_ACCURACY = null;          // Percentage for display
 let LAST_TOKEN_TIER = 0;                 // 1=API, 2=SillyTavern, 3=Learned, 4=Hardcoded
 let LAST_LOGGED_TIER = 0;                // Track last logged tier to reduce spam
 
+// API Token Distillation (REQ-001, REQ-005, REQ-011, REQ-012)
+let API_TOKEN_DISTILLATION_RATIO = 1.0;  // Ratio of API tokens to SillyTavern tokens
+let API_TOKENIZER_AVAILABLE = false;      // Whether API tokenizer is reachable
+let RATIO_ACTIVE = false;                 // Whether ratio is currently applied
+
 const TRAINING_GENERATIONS = 2;  // Generations needed to train correction factor (reduced from 3)
 const STABLE_THRESHOLD = 5;      // Consecutive stable gens to reach STABLE state
 
@@ -581,11 +586,14 @@ async function test_tokenizer_connection() {
             headers['x-api-key'] = apiKey;
         }
 
+        // Use longer test text for better ratio calculation
+        const testText = get_last_prompt_raw() || 'CacheGuard tokenizer test validation string for ratio calculation.';
+
         const response = await fetch(url, {
             method: 'POST',
             headers: headers,
             body: JSON.stringify({
-                text: 'CacheGuard tokenizer test',
+                text: testText,
                 add_bos_token: true,
                 encode_special_tokens: true
             }),
@@ -605,8 +613,14 @@ async function test_tokenizer_connection() {
         const tokenCount = data.length || 0;
 
         if (tokenCount > 0) {
+            // Calculate ratio using the same test text
+            const stTokens = count_tokens(testText);
+            const sampleRatio = stTokens > 0 ? (tokenCount / stTokens) : 1.0;
+            const percentage = Math.round(Math.abs(1 - sampleRatio) * 100);
+
+            API_TOKENIZER_AVAILABLE = true;
             $status.removeClass().addClass('ct_status_message ct_status_success')
-                   .text(`Connected! Tokenized test text: ${tokenCount} tokens`);
+                   .text(`Connected! Ratio: ${sampleRatio.toFixed(2)} (API uses ~${percentage}% ${sampleRatio < 1 ? 'fewer' : 'more'} tokens)`);
             // Update Token Source indicator to reflect successful API connection
             LAST_TOKEN_TIER = 1;
             LAST_TOKEN_ACCURACY = 100;
@@ -689,6 +703,77 @@ async function count_tokens_via_api(text) {
         API_TOKENIZER_DISABLED_UNTIL = Date.now() + (5 * 60 * 1000);
         return null;
     }
+}
+
+// REQ-002, REQ-003: Calculate distillation ratio
+function calculate_distillation_ratio(apiTokens, stTokens) {
+    if (!apiTokens || apiTokens <= 0 || !stTokens || stTokens <= 0) {
+        debug_trunc('[DISTILL] Invalid counts, ratio = 1.0');
+        return 1.0;
+    }
+
+    let ratio = apiTokens / stTokens;
+
+    // REQ-003: Clamp to [0.5, 1.2]
+    if (ratio < 0.5) {
+        debug_trunc(`[DISTILL] Ratio ${ratio.toFixed(3)} below 0.5, clamping`);
+        ratio = 0.5;
+    } else if (ratio > 1.2) {
+        debug_trunc(`[DISTILL] Ratio ${ratio.toFixed(3)} above 1.2, clamping`);
+        ratio = 1.2;
+    }
+
+    debug_trunc(`[DISTILL] Calculated ratio: ${ratio.toFixed(3)} (API: ${apiTokens}, ST: ${stTokens})`);
+    return ratio;
+}
+
+// REQ-013: Apply distillation ratio to a token count
+function distill_tokens(count) {
+    if (!RATIO_ACTIVE || API_TOKEN_DISTILLATION_RATIO === 1.0) {
+        return count;
+    }
+    return Math.floor(count * API_TOKEN_DISTILLATION_RATIO);
+}
+
+// REQ-009, REQ-010: Quick API availability check on chat load
+async function check_api_tokenizer_availability() {
+    if (!get_settings('api_tokenizer_enabled')) {
+        API_TOKENIZER_AVAILABLE = false;
+        RATIO_ACTIVE = false;
+        return false;
+    }
+
+    const serverUrl = get_api_server_url();
+    if (!serverUrl) {
+        debug_trunc('[DISTILL] No server URL, API unavailable');
+        API_TOKENIZER_AVAILABLE = false;
+        RATIO_ACTIVE = false;
+        return false;
+    }
+
+    try {
+        const backendType = detect_backend_type();
+        if (backendType !== 'tabby' && backendType !== 'koboldcpp') {
+            debug_trunc('[DISTILL] Unknown backend, API unavailable');
+            API_TOKENIZER_AVAILABLE = false;
+            RATIO_ACTIVE = false;
+            return false;
+        }
+
+        // Quick test with short text
+        const testTokens = await count_tokens_via_api('CacheGuard');
+        if (testTokens && testTokens > 0) {
+            API_TOKENIZER_AVAILABLE = true;
+            debug_trunc(`[DISTILL] API tokenizer available (test: ${testTokens} tokens)`);
+            return true;
+        }
+    } catch (e) {
+        debug_trunc(`[DISTILL] API check failed: ${e.message}`);
+    }
+
+    API_TOKENIZER_AVAILABLE = false;
+    RATIO_ACTIVE = false;
+    return false;
 }
 
 // Connection profile helpers removed — summarization now uses an independent OpenAI-compatible endpoint (ct_summary_endpoint_url)
@@ -940,6 +1025,12 @@ function load_truncation_index() {
         CONSECUTIVE_DEVIATION_COUNT = chat_metadata[MODULE_NAME].consecutive_deviation_count || 0;  // V33
         LEARNED_CHARS_PER_TOKEN = chat_metadata[MODULE_NAME].learned_chars_per_token || 4.0;  // REQ-008
 
+        // REQ-004: Load distillation ratio
+        API_TOKEN_DISTILLATION_RATIO = chat_metadata[MODULE_NAME].distillation_ratio || 1.0;
+        if (API_TOKEN_DISTILLATION_RATIO !== 1.0) {
+            debug(`Loaded distillation ratio: ${API_TOKEN_DISTILLATION_RATIO.toFixed(3)}`);
+        }
+
         // V33 FIX: If loaded state is STABLE but LAST_STABLE_CHAT_LENGTH is 0 (legacy chat),
         // initialize it to current chat length to prevent constant recalculation
         if (CALIBRATION_STATE === 'STABLE' && LAST_STABLE_CHAT_LENGTH === 0) {
@@ -987,6 +1078,9 @@ function save_truncation_index() {
     chat_metadata[MODULE_NAME].last_stable_chat_length = LAST_STABLE_CHAT_LENGTH;
     chat_metadata[MODULE_NAME].consecutive_deviation_count = CONSECUTIVE_DEVIATION_COUNT;  // V33
     chat_metadata[MODULE_NAME].learned_chars_per_token = LEARNED_CHARS_PER_TOKEN;  // REQ-008
+
+    // REQ-004: Save distillation ratio
+    chat_metadata[MODULE_NAME].distillation_ratio = API_TOKEN_DISTILLATION_RATIO;
 
     debug(`Saved truncation index: ${TRUNCATION_INDEX}, correction factor: ${CHAT_TOKEN_CORRECTION_FACTOR.toFixed(3)}, state: ${CALIBRATION_STATE}`);
     saveMetadataDebounced();
@@ -1792,10 +1886,58 @@ let CHAT_TOKEN_CORRECTION_FACTOR = 1.0;  // Multiplier for chat token estimates
 // Note: This is now an async function for Qdrant support
 globalThis.truncator_intercept_messages = async function (chat, contextSize, abort, type) {
     if (!get_settings('enabled') && !get_settings('qdrant_enabled')) return;
-    
-    // Store context size for calculation
-    CURRENT_CONTEXT_SIZE = contextSize;
-    
+
+    // Store raw context size
+    const rawContextSize = contextSize;
+
+    // REQ-006: Get API token count BEFORE truncation for accurate ratio
+    if (API_TOKENIZER_AVAILABLE && get_settings('api_tokenizer_enabled')) {
+        try {
+            const last_raw_prompt = get_last_prompt_raw();
+            if (last_raw_prompt && last_raw_prompt.length > 0) {
+                // Use timeout of 500ms for intercept (REQ-007)
+                const controller = new AbortController();
+                const timeoutId = setTimeout(() => controller.abort(), 500);
+
+                try {
+                    const apiTokens = await count_tokens_via_api(last_raw_prompt);
+                    clearTimeout(timeoutId);
+
+                    if (apiTokens && apiTokens > 0) {
+                        const stTokens = count_tokens(last_raw_prompt);
+                        if (stTokens > 0) {
+                            API_TOKEN_DISTILLATION_RATIO = calculate_distillation_ratio(apiTokens, stTokens);
+                            RATIO_ACTIVE = true;
+                            debug_trunc(`[DISTILL] Ratio active: ${API_TOKEN_DISTILLATION_RATIO.toFixed(3)}`);
+                        }
+                    }
+                } catch (e) {
+                    clearTimeout(timeoutId);
+                    if (e.name === 'AbortError') {
+                        debug_trunc('[DISTILL] API call timed out, using ratio 1.0');
+                    } else {
+                        debug_trunc(`[DISTILL] API call failed: ${e.message}`);
+                    }
+                    // REQ-016: Fallback to no distillation
+                    RATIO_ACTIVE = false;
+                }
+            }
+        } catch (e) {
+            debug_trunc(`[DISTILL] Error in ratio calculation: ${e.message}`);
+            RATIO_ACTIVE = false;
+        }
+    } else {
+        // REQ-017: API unavailable
+        if (get_settings('api_tokenizer_enabled')) {
+            debug_trunc('[DISTILL] API unavailable, using SillyTavern count');
+        }
+        RATIO_ACTIVE = false;
+    }
+
+    // REQ-013: Apply distillation ratio to context size
+    CURRENT_CONTEXT_SIZE = RATIO_ACTIVE ? distill_tokens(rawContextSize) : rawContextSize;
+    debug_trunc(`[DISTILL] Context: raw=${rawContextSize}, distilled=${CURRENT_CONTEXT_SIZE}`);
+
     // Refresh Qdrant memories first (async) - if enabled
     if (get_settings('qdrant_enabled')) {
         try {
@@ -1881,6 +2023,9 @@ function update_status_display() {
     // REQ-008: Get initial count synchronously (TIER 2-4)
     let actualSize = count_tokens(last_raw_prompt);
     const targetSize = get_settings('target_context_size');
+
+    // REQ-015: Calculate distilled size for display
+    const distilledSize = RATIO_ACTIVE ? distill_tokens(actualSize) : actualSize;
 
     // Safety: If tokenizer returned 0, try segment-based calculation
     if (actualSize === 0 && last_raw_prompt && last_raw_prompt.length > 0) {
@@ -2001,14 +2146,20 @@ function update_status_display() {
         'background-color': bgColor,
         'color': textColor
     });
-    
+
+    // REQ-015: Show both raw and distilled counts when ratio is active
+    const actualDisplay = RATIO_ACTIVE
+        ? `<div>Actual: <b>${distilledSize.toLocaleString()}</b> tokens (API)</div>
+           <div style="font-size: 0.9em; opacity: 0.7;">SillyTavern: ${actualSize.toLocaleString()}</div>`
+        : `<div>Actual: <b>${actualSize.toLocaleString()}</b> tokens</div>`;
+
     const statusText = `
-        <div>Actual: <b>${actualSize.toLocaleString()}</b> tokens</div>
+        ${actualDisplay}
         <div>Target: <b>${targetSize.toLocaleString()}</b> tokens</div>
         <div>Difference: <b>${difference > 0 ? '+' : ''}${difference.toLocaleString()}</b> tokens</div>
         <div>Error: <b>${percentError.toFixed(1)}%</b></div>
     `;
-    
+
     debug(`  Setting status text and showing display`);
     debug(`  Status text: ${statusText.substring(0, 100)}...`);
     $text.html(statusText);
@@ -2994,6 +3145,22 @@ function update_prediction_display() {
         } else {
             // No data yet
             $accuracy.text('--').addClass('ct_text_dim');
+        }
+    }
+
+    // REQ-015: Show distillation ratio status
+    const $distillation = $('#ct_distillation_status');
+    if ($distillation.length > 0) {
+        if (RATIO_ACTIVE && API_TOKEN_DISTILLATION_RATIO !== 1.0) {
+            const percentage = Math.round((1 - API_TOKEN_DISTILLATION_RATIO) * 100);
+            $distillation.text(`Distillation: ${API_TOKEN_DISTILLATION_RATIO.toFixed(2)} (${percentage}% reduction)`)
+                         .removeClass('ct_text_yellow ct_text_orange').addClass('ct_text_green');
+        } else if (API_TOKENIZER_AVAILABLE) {
+            $distillation.text('Distillation: 1.00 (no adjustment)')
+                         .removeClass('ct_text_green ct_text_orange').addClass('ct_text_yellow');
+        } else {
+            $distillation.text('Distillation: N/A (API unavailable)')
+                         .removeClass('ct_text_green ct_text_yellow').addClass('ct_text_orange');
         }
     }
 
@@ -4292,7 +4459,14 @@ function register_event_listeners() {
             // - calibration_state, generation_count, stable_count, retrain_count
             // - deletion_count, qdrant_token_history
             load_truncation_index();
-            
+
+            // REQ-009: Check API tokenizer availability on chat load
+            check_api_tokenizer_availability().then(available => {
+                if (available) {
+                    debug_trunc('[DISTILL] API available, ratio will be calculated on first generation');
+                }
+            });
+
             // Clear Qdrant memories for new chat (these are transient, not persisted)
             CURRENT_QDRANT_MEMORIES = [];
             CURRENT_QDRANT_INJECTION = '';

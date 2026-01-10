@@ -1578,7 +1578,29 @@ function calculate_truncation_index() {
     LAST_PREDICTED_CHAT_SIZE = predictedChatSize;
     LAST_PREDICTED_CHAT_SIZE_RAW = predictedChatSizeRaw;  // V29: Store raw for correction factor calculation
     LAST_PREDICTED_NON_CHAT_SIZE = nonChatBudget;
-    
+
+    // Log estimated FINAL prompt size (base + summaries + Qdrant)
+    const qdrantTokensForEstimate = get_qdrant_injection_tokens();
+    const summaryBudgetForEstimate = get_max_summary_injection_tokens();
+    const estimatedFinal = predictedTotal + summaryBudgetForEstimate + qdrantTokensForEstimate;
+    const originalTarget = Math.floor(maxContext * (get_settings('target_utilization') || 0.80));
+    debug_trunc(`=== FINAL SIZE ESTIMATE ===`);
+    debug_trunc(`  Non-chat (system/world): ${nonChatBudget} tokens`);
+    debug_trunc(`  Kept chat (${chat.length - finalIndex} msgs): ${predictedChatSize} tokens`);
+    debug_trunc(`  Summary budget: ${summaryBudgetForEstimate} tokens`);
+    debug_trunc(`  Qdrant: ${qdrantTokensForEstimate} tokens`);
+    debug_trunc(`  ---------------------------`);
+    debug_trunc(`  ESTIMATED FINAL: ${estimatedFinal} tokens`);
+    debug_trunc(`  Original target: ${originalTarget} tokens (${(estimatedFinal/originalTarget*100).toFixed(1)}%)`);
+    debug_trunc(`  Max context: ${maxContext} tokens (${(estimatedFinal/maxContext*100).toFixed(1)}%)`);
+    if (estimatedFinal > originalTarget) {
+        debug_trunc(`  WARNING: Estimated size EXCEEDS target by ${estimatedFinal - originalTarget} tokens!`);
+    }
+    if (estimatedFinal > maxContext) {
+        debug_trunc(`  CRITICAL: Estimated size EXCEEDS max context by ${estimatedFinal - maxContext} tokens!`);
+    }
+    debug_trunc(`===========================`);
+
     return finalIndex;
 }
 

@@ -2346,17 +2346,23 @@ function calibrate_target_size(actualSize) {
     
     switch (CALIBRATION_STATE) {
         case 'WAITING':
-            // Check if we've reached the threshold to start calibrating
-            // V34 BUG-001 FIX: Also check if truncation is active (messages being excluded)
-            // If truncation is active, we should start calibrating immediately even if under threshold
+            // V35 FIX: Truncation-active should only accelerate training when NEAR threshold
+            // Not when we're far below target (e.g., 40% utilization)
+            // The V34 BUG-001 FIX allowed training at any size when truncation was active,
+            // which caused premature training starts. Now require 90% of target first.
             const truncationActive = TRUNCATION_INDEX !== null && TRUNCATION_INDEX > 0;
-            
-            if (actualSize < startThreshold && !truncationActive) {
-            } else {
+            const nearThreshold = actualSize >= startThreshold * 0.9;  // Within 90% of target
+
+            // Start training when:
+            // 1. Reached the threshold (actualSize >= startThreshold), OR
+            // 2. Near threshold (>=90%) AND truncation is active (acceleration case)
+            const shouldStartTraining = actualSize >= startThreshold ||
+                                        (truncationActive && nearThreshold);
+
+            if (shouldStartTraining) {
                 // Transition to INITIAL_TRAINING
                 CALIBRATION_STATE = 'INITIAL_TRAINING';
                 GENERATION_COUNT = 0;
-                // REQ-003: Removed threshold popup - state transition is silent
             }
             break;
             
